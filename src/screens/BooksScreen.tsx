@@ -93,6 +93,10 @@ const BooksScreen: React.FC = () => {
     });
   }, [navigation]);
 
+  const handleEditBook = useCallback((book: Book) => {
+    navigation.navigate('EditBook', { bookId: book.id });
+  }, [navigation]);
+
   const navigateToAddBook = useCallback(() => {
     navigation.navigate('AddBook');
   }, [navigation]);
@@ -112,6 +116,7 @@ const BooksScreen: React.FC = () => {
       book={book}
       entryCount={entryCounts[book.id]}
       onNavigate={navigateToBook}
+      onEdit={handleEditBook}
       onDelete={handleDeleteBook}
     />
   );

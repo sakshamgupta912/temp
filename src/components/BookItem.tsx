@@ -9,6 +9,7 @@ type BookItemProps = {
   book: Book;
   entryCount: number;
   onNavigate: (book: Book) => void;
+  onEdit: (book: Book) => void;
   onDelete: (book: Book) => void;
 };
 
@@ -20,7 +21,7 @@ const formatDate = (date: Date) => {
   }).format(new Date(date));
 };
 
-export const BookItem: React.FC<BookItemProps> = React.memo(({ book, entryCount, onNavigate, onDelete }) => {
+export const BookItem: React.FC<BookItemProps> = React.memo(({ book, entryCount, onNavigate, onEdit, onDelete }) => {
   const theme = useTheme();
   const [menuVisible, setMenuVisible] = useState(false);
 
@@ -63,7 +64,8 @@ export const BookItem: React.FC<BookItemProps> = React.memo(({ book, entryCount,
   const handleEdit = () => {
     console.log(`[BookItem ${book.id.slice(-4)}] ✏️ handleEdit called`);
     setMenuVisible(false);
-    Alert.alert('Edit Book', 'Edit book functionality not yet implemented');
+    console.log(`[BookItem ${book.id.slice(-4)}] Calling onEdit prop`);
+    onEdit(book);
   };
 
   const handleDelete = () => {

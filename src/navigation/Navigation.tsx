@@ -11,6 +11,7 @@ import { ActivityIndicator, Text, useTheme } from 'react-native-paper';
 import DashboardScreen from '../screens/DashboardScreen';
 import BooksScreen from '../screens/BooksScreen';
 import AddBookScreen from '../screens/AddBookScreen';
+import EditBookScreen from '../screens/EditBookScreen';
 import BookDetailScreen from '../screens/BookDetailScreen';
 import AddEntryScreen from '../screens/AddEntryScreen';
 import EditEntryScreen from '../screens/EditEntryScreen';
@@ -30,6 +31,7 @@ export type RootStackParamList = {
   Login: undefined;
   Main: undefined;
   AddBook: undefined;
+  EditBook: { bookId: string };
   BookDetail: { bookId: string; bookName: string };
   AddEntry: { bookId: string };
   EditEntry: { entryId: string };
@@ -201,6 +203,21 @@ const Navigation: React.FC = () => {
               component={AddBookScreen}
               options={{ 
                 title: 'Create Book',
+                headerStyle: {
+                  backgroundColor: theme.colors.surface,
+                  shadowColor: theme.colors.shadow,
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.1,
+                  shadowRadius: 4,
+                  elevation: 4,
+                },
+              }}
+            />
+            <Stack.Screen 
+              name="EditBook" 
+              component={EditBookScreen}
+              options={{ 
+                title: 'Edit Book',
                 headerStyle: {
                   backgroundColor: theme.colors.surface,
                   shadowColor: theme.colors.shadow,

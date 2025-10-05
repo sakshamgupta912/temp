@@ -1,5 +1,5 @@
 // Book Detail screen - Material Design view showing entries for a specific book
-import React, { useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, memo, useRef, useLayoutEffect } from 'react';
 import { 
   View, 
   StyleSheet, 
@@ -128,6 +128,22 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
       setIsRefreshing(false);
     }
   }, [bookId]);
+
+  // Add edit button to header
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <IconButton
+          icon="pencil"
+          size={20}
+          onPress={() => {
+            navigation.navigate('EditBook', { bookId });
+          }}
+          iconColor={theme.colors.onSurface}
+        />
+      ),
+    });
+  }, [navigation, bookId, theme.colors.onSurface]);
 
   // Load entries when screen is focused
   useFocusEffect(
