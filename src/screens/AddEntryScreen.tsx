@@ -51,11 +51,9 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
   const [remarks, setRemarks] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   
-  // Currency state
-  const [selectedCurrency, setSelectedCurrency] = useState('');
-  const [userDisplayCurrency, setUserDisplayCurrency] = useState('INR');
-  const [convertedAmount, setConvertedAmount] = useState('');
-  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
+  // NEW: Book and currency state (entries inherit book's currency)
+  const [bookCurrency, setBookCurrency] = useState<string>('USD');
+  const [bookName, setBookName] = useState<string>('');
 
   // UI state
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -70,60 +68,38 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
 
   useEffect(() => {
     if (user) {
-      // Categories are loaded by CategoryPicker component
-      initializeCurrency();
+      // Load book details to get its currency
+      loadBookDetails();
       // Set "Others" as default category
       setSelectedCategory('Others');
     }
-  }, [user]);
+  }, [user, bookId]);
 
-  const initializeCurrency = async () => {
+  // NEW: Load book details to get currency
+  const loadBookDetails = async () => {
     try {
-      const displayCurr = await currencyUtils.getUserDisplayCurrency();
-      setUserDisplayCurrency(displayCurr);
-      setSelectedCurrency(displayCurr);
-      console.log('AddEntry: Initialized with user display currency:', displayCurr);
+      const books = await asyncStorageService.getBooks(user!.id);
+      const currentBook = books.find(b => b.id === bookId);
+      
+      if (currentBook) {
+        setBookCurrency(currentBook.currency);
+        setBookName(currentBook.name);
+        console.log(`AddEntry: Book "${currentBook.name}" uses currency: ${currentBook.currency}`);
+      } else {
+        console.warn('AddEntry: Book not found, using default USD');
+        setBookCurrency('USD');
+      }
     } catch (error) {
-      console.error('Error initializing currency:', error);
-      setUserDisplayCurrency('INR');
-      setSelectedCurrency('INR');
+      console.error('Error loading book details:', error);
+      setBookCurrency('USD');
     }
   };
 
-  // Update conversion preview when amount or currency changes
-  useEffect(() => {
-    updateConversionPreview();
-  }, [amount, selectedCurrency]);
-
-  const updateConversionPreview = async () => {
-    if (!amount || !selectedCurrency || selectedCurrency === 'INR') {
-      setConvertedAmount('');
-      setExchangeRate(null);
-      return;
-    }
-
-    try {
-      const numAmount = parseFloat(amount);
-      if (isNaN(numAmount)) return;
-
-      const conversion = await currencyUtils.convertToINR(numAmount, selectedCurrency);
-      setConvertedAmount(conversion.convertedAmount.toFixed(2));
-      setExchangeRate(conversion.exchangeRate);
-    } catch (error) {
-      console.error('Error updating conversion preview:', error);
-      setConvertedAmount('');
-      setExchangeRate(null);
-    }
-  };
+  // OLD conversion preview removed - entries now use book's currency directly
 
   // Categories are now handled by the CategoryPicker component
 
   // Category creation is now handled in CategoryManagementScreen via CategoryPicker
-
-  const handleCurrencySelect = (currency: any) => {
-    setSelectedCurrency(currency.code);
-    console.log('AddEntry: Currency changed to:', currency.code);
-  };
 
   const validateForm = () => {
     const newErrors: { [key: string]: string } = {};
@@ -170,42 +146,60 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
       console.log('AddEntry: Starting entry creation process', {
         bookId,
         amount: finalAmount,
-        currency: selectedCurrency,
+        currency: bookCurrency,
         category: selectedCategory,
         userId: user.id
       });
 
-      // Prepare entry with currency conversion
-      let entryData;
-      try {
-        entryData = await currencyUtils.prepareEntryForStorage({
-          bookId,
-          amount: finalAmount,
-          currency: selectedCurrency,
-          date,
-          party: party.trim() || undefined,
-          category: selectedCategory,
-          paymentMode,
-          remarks: remarks.trim() || undefined,
-          userId: user.id
-        });
-        console.log('AddEntry: Entry data prepared with currency conversion:', entryData);
-      } catch (currencyError) {
-        console.error('AddEntry: Currency conversion error:', currencyError);
-        // Fallback to direct entry creation without currency conversion
-        entryData = {
-          bookId,
-          amount: finalAmount,
-          currency: selectedCurrency,
-          date,
-          party: party.trim() || undefined,
-          category: selectedCategory,
-          paymentMode,
-          remarks: remarks.trim() || undefined,
-          userId: user.id
-        };
-        console.log('AddEntry: Using fallback entry data (no currency conversion):', entryData);
+      // NEW: Capture historical exchange rates for this entry
+      console.log(`📸 Capturing historical rates for ${bookCurrency}...`);
+      const historicalRates = await currencyService.captureHistoricalRates(bookCurrency);
+      console.log(`✅ Captured ${Object.keys(historicalRates.rates).length} exchange rates`);
+
+      // PERFORMANCE: Calculate normalized amount (pre-converted to user default currency)
+      const userCurrency = await preferencesService.getCurrency();
+      const userDefaultCurrency = userCurrency.code;
+      console.log(`💱 Calculating normalized amount: ${bookCurrency} → ${userDefaultCurrency}`);
+      
+      let normalizedAmount = finalAmount;
+      let conversionRate = 1.0;
+      
+      if (bookCurrency !== userDefaultCurrency) {
+        // Get exchange rate (uses book locked rate if available)
+        const rate = await currencyService.getExchangeRate(bookCurrency, userDefaultCurrency, bookId);
+        if (rate !== null) {
+          conversionRate = rate;
+          normalizedAmount = finalAmount * rate;
+          console.log(`✅ Converted: ${finalAmount} ${bookCurrency} × ${rate} = ${normalizedAmount} ${userDefaultCurrency}`);
+        } else {
+          console.warn(`⚠️ Could not get rate for ${bookCurrency} → ${userDefaultCurrency}, using original amount`);
+          normalizedAmount = finalAmount;
+        }
+      } else {
+        console.log(`✅ No conversion needed, entry already in user currency`);
       }
+
+      // Prepare entry data (stored in book's currency + normalized amount for fast analytics)
+      const entryData = {
+        bookId,
+        amount: finalAmount,
+        currency: bookCurrency, // Entry inherits book's currency
+        date,
+        party: party.trim() || undefined,
+        category: selectedCategory,
+        paymentMode,
+        remarks: remarks.trim() || undefined,
+        historicalRates, // Store exchange rates at entry creation time
+        normalizedAmount, // Pre-converted amount for fast analytics
+        normalizedCurrency: userDefaultCurrency, // User's default currency at creation time
+        conversionRate, // Rate used for conversion
+        userId: user.id
+      };
+      
+      console.log('AddEntry: Entry data prepared (no conversion needed):', {
+        ...entryData,
+        historicalRates: `${Object.keys(historicalRates.rates).length} rates captured`
+      });
 
       // Create entry in storage
       try {
@@ -310,34 +304,21 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
               </HelperText>
             </View>
 
-            {/* Currency Selection */}
+            {/* Book Currency Info - Read-only display */}
             <View style={styles.section}>
-              <CurrencyPicker
-                selectedCurrency={selectedCurrency}
-                onCurrencySelect={handleCurrencySelect}
-                label="Currency"
-                showFlag={true}
-                style={styles.currencyPicker}
-              />
-              
-              {/* Conversion Preview */}
-              {selectedCurrency !== 'INR' && convertedAmount && (
-                <Surface style={styles.conversionPreview} elevation={1}>
-                  <View style={styles.conversionContent}>
-                    <Text variant="bodySmall" style={styles.conversionLabel}>
-                      Converted to INR:
-                    </Text>
-                    <Text variant="bodyLarge" style={styles.conversionAmount}>
-                      {currencyService.formatCurrency(parseFloat(convertedAmount), 'INR')}
-                    </Text>
-                    {exchangeRate && (
-                      <Text variant="bodySmall" style={styles.exchangeRate}>
-                        Rate: 1 {selectedCurrency} = {exchangeRate.toFixed(4)} INR
-                      </Text>
-                    )}
-                  </View>
-                </Surface>
-              )}
+              <Surface style={styles.currencyInfoCard} elevation={1}>
+                <View style={styles.currencyInfoContent}>
+                  <Text variant="bodySmall" style={styles.currencyInfoLabel}>
+                    Book Currency
+                  </Text>
+                  <Text variant="titleMedium" style={styles.currencyInfoValue}>
+                    {bookCurrency}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.currencyInfoHelper}>
+                    Entries are stored in the book's currency
+                  </Text>
+                </View>
+              </Surface>
             </View>
 
             {/* Date Picker */}
@@ -469,7 +450,7 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
                       }
                     ]}
                   >
-                    {entryType === 'income' ? '+' : '-'}₹{amount}
+                    {entryType === 'income' ? '+' : '-'}{currencyService.formatCurrency(parseFloat(amount), bookCurrency)}
                   </Chip>
                   <Text style={{ color: theme.colors.onSurface }}>
                     {selectedCategory} • {date.toLocaleDateString()}
@@ -603,27 +584,26 @@ const styles = StyleSheet.create({
   saveButton: {
     marginLeft: spacing.sm,
   },
-  currencyPicker: {
-    marginVertical: 0,
-  },
-  conversionPreview: {
+  // NEW: Book currency info display styles
+  currencyInfoCard: {
     marginTop: spacing.sm,
     padding: spacing.md,
     borderRadius: borderRadius.sm,
   },
-  conversionContent: {
+  currencyInfoContent: {
     alignItems: 'center',
   },
-  conversionLabel: {
+  currencyInfoLabel: {
     opacity: 0.7,
   },
-  conversionAmount: {
+  currencyInfoValue: {
     fontWeight: '600',
     marginVertical: spacing.xs,
   },
-  exchangeRate: {
+  currencyInfoHelper: {
     opacity: 0.6,
     fontSize: 12,
+    textAlign: 'center',
   },
 });
 

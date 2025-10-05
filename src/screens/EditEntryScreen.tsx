@@ -25,6 +25,10 @@ import asyncStorageService from '../services/asyncStorage';
 import { useAuth } from '../contexts/AuthContext';
 import { spacing, borderRadius } from '../theme/materialTheme';
 import CategoryPicker from '../components/CategoryPicker';
+import { CurrencyPicker } from '../components/CurrencyPicker';
+import currencyUtils from '../utils/currencyUtils';
+import currencyService from '../services/currencyService';
+import preferencesService from '../services/preferences';
 
 type EditEntryRouteProp = RouteProp<RootStackParamList, 'EditEntry'>;
 
@@ -49,6 +53,12 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
   const [remarks, setRemarks] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingEntry, setIsLoadingEntry] = useState(true);
+  
+  // Currency state
+  const [selectedCurrency, setSelectedCurrency] = useState('');
+  const [userDisplayCurrency, setUserDisplayCurrency] = useState('INR');
+  const [convertedAmount, setConvertedAmount] = useState('');
+  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
 
   // UI state
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -124,7 +134,7 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
     }
   };
 
-  const populateForm = (entry: Entry) => {
+  const populateForm = async (entry: Entry) => {
     setAmount(Math.abs(entry.amount).toString());
     setEntryType(entry.amount >= 0 ? 'income' : 'expense');
     setDate(entry.date);
@@ -132,6 +142,34 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
     setSelectedCategory(entry.category);
     setPaymentMode(entry.paymentMode);
     setRemarks(entry.remarks || '');
+    
+    // Initialize currency
+    try {
+      const displayCurr = await currencyUtils.getUserDefaultCurrency();
+      setUserDisplayCurrency(displayCurr);
+      setSelectedCurrency(displayCurr);
+    } catch (error) {
+      console.error('Error initializing currency:', error);
+      setUserDisplayCurrency('INR');
+      setSelectedCurrency('INR');
+    }
+  };
+
+  // Update conversion preview when amount or currency changes
+  useEffect(() => {
+    updateConversionPreview();
+  }, [amount, selectedCurrency]);
+
+  // NOTE: Entry editing maintains the book's currency - no conversion needed
+  const updateConversionPreview = async () => {
+    // Conversion preview removed - entries use book's currency
+    setConvertedAmount('');
+    setExchangeRate(null);
+  };
+
+  const handleCurrencySelect = (currency: any) => {
+    setSelectedCurrency(currency.code);
+    console.log('EditEntry: Currency changed to:', currency.code);
   };
 
   // Categories are now handled by the CategoryPicker component
@@ -166,6 +204,30 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
       const entryAmount = parseFloat(amount);
       const finalAmount = entryType === 'income' ? entryAmount : -entryAmount;
 
+      // PERFORMANCE: Recalculate normalized amount if amount changed
+      const userCurrency = await preferencesService.getCurrency();
+      const userDefaultCurrency = userCurrency.code;
+      
+      let normalizedAmount = finalAmount;
+      let conversionRate = 1.0;
+      
+      if (originalEntry.currency !== userDefaultCurrency) {
+        // Get exchange rate (uses book locked rate if available)
+        const rate = await currencyService.getExchangeRate(
+          originalEntry.currency, 
+          userDefaultCurrency, 
+          originalEntry.bookId
+        );
+        if (rate !== null) {
+          conversionRate = rate;
+          normalizedAmount = finalAmount * rate;
+          console.log(`💱 Recalculated normalized amount: ${finalAmount} ${originalEntry.currency} × ${rate} = ${normalizedAmount} ${userDefaultCurrency}`);
+        } else {
+          console.warn(`⚠️ Could not get rate for ${originalEntry.currency} → ${userDefaultCurrency}, using original amount`);
+          normalizedAmount = finalAmount;
+        }
+      }
+
       const updates: Partial<Entry> = {
         amount: finalAmount,
         date,
@@ -173,6 +235,9 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
         category: selectedCategory,
         paymentMode,
         remarks: remarks.trim() || undefined,
+        normalizedAmount, // Update normalized amount
+        normalizedCurrency: userDefaultCurrency, // Keep user default currency
+        conversionRate, // Update conversion rate
       };
 
       await asyncStorageService.updateEntry(originalEntry.id, updates);
@@ -249,18 +314,9 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
     >
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         <Surface style={[styles.header, { backgroundColor: theme.colors.primary }]} elevation={2}>
-          <View style={styles.headerContent}>
-            <Title style={[styles.headerTitle, { color: theme.colors.onPrimary }]}>
-              Edit Entry
-            </Title>
-            <IconButton
-              icon="delete"
-              iconColor={theme.colors.onPrimary}
-              size={24}
-              onPress={handleDelete}
-              style={styles.deleteButton}
-            />
-          </View>
+          <Title style={[styles.headerTitle, { color: theme.colors.onPrimary }]}>
+            Edit Entry
+          </Title>
         </Surface>
 
         <Card style={[styles.formCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
@@ -302,16 +358,53 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
               <TextInput
                 label="Amount *"
                 value={amount}
-                onChangeText={setAmount}
+                onChangeText={(text) => {
+                  setAmount(text);
+                  // Clear error on input change
+                  if (errors.amount) {
+                    setErrors(prev => ({ ...prev, amount: '' }));
+                  }
+                }}
                 keyboardType="numeric"
                 mode="outlined"
                 error={!!errors.amount}
-                left={<TextInput.Icon icon="currency-inr" />}
+                left={<TextInput.Icon icon="cash" />}
                 style={styles.input}
+                placeholder="0.00"
               />
               <HelperText type="error" visible={!!errors.amount}>
                 {errors.amount}
               </HelperText>
+            </View>
+
+            {/* Currency Selection */}
+            <View style={styles.section}>
+              <CurrencyPicker
+                selectedCurrency={selectedCurrency}
+                onCurrencySelect={handleCurrencySelect}
+                label="Currency"
+                showFlag={true}
+                style={styles.currencyPicker}
+              />
+              
+              {/* Conversion Preview */}
+              {selectedCurrency !== 'INR' && convertedAmount && (
+                <Surface style={styles.conversionPreview} elevation={1}>
+                  <View style={styles.conversionContent}>
+                    <Text variant="bodySmall" style={styles.conversionLabel}>
+                      Converted to INR:
+                    </Text>
+                    <Text variant="bodyLarge" style={styles.conversionAmount}>
+                      {currencyService.formatCurrency(parseFloat(convertedAmount), 'INR')}
+                    </Text>
+                    {exchangeRate && (
+                      <Text variant="bodySmall" style={styles.exchangeRate}>
+                        Rate: 1 {selectedCurrency} = {exchangeRate.toFixed(4)} INR
+                      </Text>
+                    )}
+                  </View>
+                </Surface>
+              )}
             </View>
 
             {/* Date Picker */}
@@ -479,6 +572,7 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
       {/* Delete FAB */}
       <FAB
         icon="delete"
+        color="white"
         style={[styles.deleteFab, { backgroundColor: theme.colors.error }]}
         onPress={handleDelete}
         disabled={isLoading}
@@ -524,20 +618,11 @@ const styles = StyleSheet.create({
   header: {
     padding: spacing.lg,
     marginBottom: spacing.md,
-  },
-  headerContent: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
   },
   headerTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    flex: 1,
-    textAlign: 'center',
-  },
-  deleteButton: {
-    margin: 0,
   },
   formCard: {
     margin: spacing.md,
@@ -612,6 +697,29 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 16,
     bottom: 16,
+  },
+  currencyPicker: {
+    marginBottom: spacing.sm,
+  },
+  conversionPreview: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: 'rgba(33, 150, 243, 0.08)',
+  },
+  conversionContent: {
+    gap: spacing.xs,
+  },
+  conversionLabel: {
+    opacity: 0.7,
+  },
+  conversionAmount: {
+    fontWeight: 'bold',
+    color: '#2196F3',
+  },
+  exchangeRate: {
+    opacity: 0.6,
+    marginTop: spacing.xs,
   },
 });
 

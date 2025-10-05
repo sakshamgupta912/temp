@@ -29,8 +29,8 @@ export interface AppPreferences {
 }
 
 const DEFAULT_PREFERENCES: AppPreferences = {
-  currency: 'INR',
-  currencySymbol: '₹',
+  currency: 'USD', // Changed to USD as default (users can set their own during signup)
+  currencySymbol: '$',
   dateFormat: 'DD/MM/YYYY',
   defaultPaymentMode: 'cash',
   defaultEntryType: 'expense',
@@ -101,6 +101,11 @@ class PreferencesService {
       console.error('Error updating preferences:', error);
       throw error;
     }
+  }
+
+  // Alias for updatePreferences (for backward compatibility)
+  async savePreferences(updates: Partial<AppPreferences>): Promise<void> {
+    return this.updatePreferences(updates);
   }
 
   async resetPreferences(): Promise<void> {

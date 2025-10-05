@@ -1,25 +1,43 @@
-// Currency Utilities - Handle entry currency conversions and mixed currency scenarios
+// Currency Utilities - Handle multi-currency book/entry management with historical rates
 import preferencesService from '../services/preferences';
 import currencyService from '../services/currencyService';
-import { Entry } from '../models/types';
+import { Entry, Book, BookCurrencyHistory, ConversionHistoryEntry, ConversionReason } from '../models/types';
 
-export interface CurrencyConversionResult {
-  convertedAmount: number; // Amount in default currency
-  originalCurrency: string;
-  originalAmount: number;
+/**
+ * NEW ARCHITECTURE:
+ * - Each book has its own currency
+ * - Entries are stored in their book's currency
+ * - User has a default currency for dashboard/global views
+ * - Historical rates are captured at entry creation
+ * - Book currency can be changed with full audit trail
+ */
+
+export interface BookConversionResult {
+  convertedAmount: number;
+  fromCurrency: string;
+  toCurrency: string;
   exchangeRate: number;
-  defaultCurrency: string;
+  usedHistoricalRate: boolean;
 }
 
-export interface EntryWithCurrency extends Entry {
-  displayCurrency: string; // Currency to display (original or default)
-  displayAmount: number; // Amount to display  
+export interface BookSummaryWithCurrency {
+  bookId: string;
+  bookName: string;
+  bookCurrency: string;
+  totalIncome: number;
+  totalExpenses: number;
+  netBalance: number;
+  entryCount: number;
+  // Converted to user's default currency
+  convertedTotalIncome?: number;
+  convertedTotalExpenses?: number;
+  convertedNetBalance?: number;
+  convertedCurrency?: string;
+  conversionRate?: number;
 }
-
 
 class CurrencyUtils {
   private static instance: CurrencyUtils;
-  private static readonly BACKEND_CURRENCY = 'INR'; // Always store in INR
 
   static getInstance(): CurrencyUtils {
     if (!CurrencyUtils.instance) {
@@ -28,178 +46,362 @@ class CurrencyUtils {
     return CurrencyUtils.instance;
   }
 
-  // Always return INR as the backend currency
-  async getBackendCurrency(): Promise<string> {
-    return CurrencyUtils.BACKEND_CURRENCY;
-  }
-
-  // Get user's preferred display currency
-  async getUserDisplayCurrency(): Promise<string> {
+  /**
+   * Get user's default currency for dashboard/global views
+   */
+  async getUserDefaultCurrency(): Promise<string> {
     try {
       const prefs = await preferencesService.getPreferences();
-      return prefs.currency || 'INR';
+      return prefs.currency || 'USD';
     } catch (error) {
-      return 'INR';
+      console.error('Error getting user default currency:', error);
+      return 'USD';
     }
   }
 
-  // Convert amount from input currency to INR for storage
-  async convertToINR(
-    amount: number,
-    fromCurrency: string
-  ): Promise<CurrencyConversionResult> {
-    const backendCurrency = await this.getBackendCurrency();
-    if (fromCurrency === backendCurrency) {
-      return {
-        convertedAmount: amount,
-        originalCurrency: fromCurrency,
-        originalAmount: amount,
-        exchangeRate: 1,
-        defaultCurrency: backendCurrency
-      };
-    }
+  /**
+   * Set user's default currency
+   */
+  async setUserDefaultCurrency(currency: string): Promise<void> {
     try {
-      const rate = await currencyService.getExchangeRate(fromCurrency, backendCurrency);
-      if (rate === null) {
-        console.warn(`Could not get exchange rate from ${fromCurrency} to ${backendCurrency}, using 1:1`);
-        return {
-          convertedAmount: amount,
-          originalCurrency: fromCurrency,
-          originalAmount: amount,
-          exchangeRate: 1,
-          defaultCurrency: backendCurrency
-        };
-      }
-      const convertedAmount = amount * rate;
-      console.log(`Converted ${currencyService.formatCurrency(amount, fromCurrency)} to ${currencyService.formatCurrency(convertedAmount, backendCurrency)} (rate: ${rate})`);
-      return {
-        convertedAmount,
-        originalCurrency: fromCurrency,
-        originalAmount: amount,
-        exchangeRate: rate,
-        defaultCurrency: backendCurrency
-      };
+      await preferencesService.savePreferences({ currency });
+      console.log(`✅ User default currency set to: ${currency}`);
     } catch (error) {
-      console.error('Currency conversion error:', error);
-      return {
-        convertedAmount: amount,
-        originalCurrency: fromCurrency,
-        originalAmount: amount,
-        exchangeRate: 1,
-        defaultCurrency: backendCurrency
-      };
+      console.error('Error setting user default currency:', error);
+      throw error;
     }
   }
 
-  // Convert amount from INR to user's display currency for UI
-  async convertFromINR(
-    inrAmount: number,
-    toCurrency: string
-  ): Promise<number> {
-    const backendCurrency = await this.getBackendCurrency();
-    if (toCurrency === backendCurrency) {
-      return inrAmount;
-    }
-    try {
-      const rate = await currencyService.getExchangeRate(backendCurrency, toCurrency);
-      return rate !== null ? inrAmount * rate : inrAmount;
-    } catch (error) {
-      console.error('Error converting from INR:', error);
-      return inrAmount;
-    }
-  }
-
-  // Prepare entry data for storage (convert to INR)
-  async prepareEntryForStorage(entryData: {
-    amount: number;
-    currency: string;
-    [key: string]: any;
-  }): Promise<Partial<Entry>> {
-    const conversion = await this.convertToINR(entryData.amount, entryData.currency);
-    const backendCurrency = await this.getBackendCurrency();
-    const result: Partial<Entry> = {
-      ...entryData,
-      amount: conversion.convertedAmount, // Store in INR
-    };
-    // Only store currency info if different from INR
-    if (entryData.currency !== backendCurrency) {
-      result.originalCurrency = conversion.originalCurrency;
-      result.originalAmount = conversion.originalAmount;
-      result.exchangeRate = conversion.exchangeRate;
-    }
-    return result;
-  }
-
-  // Prepare entry for display (convert from INR to user's display currency)
-  async prepareEntryForDisplay(entry: Entry): Promise<EntryWithCurrency> {
-    const userCurrency = await this.getUserDisplayCurrency();
-    const backendCurrency = await this.getBackendCurrency();
-    // Convert from INR to user's display currency
-    const displayAmount = await this.convertFromINR(entry.amount, userCurrency);
-    return {
-      ...entry,
-      displayCurrency: userCurrency,
-      displayAmount
-    };
-  }
-
-  // Calculate totals for entries (all amounts are in INR)
-  async calculateTotals(entries: Entry[]): Promise<{
+  /**
+   * Calculate book summary in book's native currency
+   */
+  calculateBookSummary(entries: Entry[], bookCurrency: string): {
     totalIncome: number;
     totalExpenses: number;
     netBalance: number;
     currency: string;
-  }> {
-    // All entries are stored in INR
-    const totalIncome = entries.filter(e => e.amount > 0).reduce((sum, e) => sum + e.amount, 0);
-    const totalExpenses = entries.filter(e => e.amount < 0).reduce((sum, e) => sum + Math.abs(e.amount), 0);
+  } {
+    // All entries in a book are in the same currency
+    const totalIncome = entries
+      .filter(e => e.amount > 0)
+      .reduce((sum, e) => sum + e.amount, 0);
+    
+    const totalExpenses = entries
+      .filter(e => e.amount < 0)
+      .reduce((sum, e) => sum + Math.abs(e.amount), 0);
+    
     const netBalance = totalIncome - totalExpenses;
+
     return {
       totalIncome,
       totalExpenses,
       netBalance,
-      currency: 'INR',
+      currency: bookCurrency
     };
   }
 
-  // Format amount for display (from INR to user's currency)
-  async formatEntryAmount(entry: Entry): Promise<string> {
-    const entryWithCurrency = await this.prepareEntryForDisplay(entry);
-    const isIncome = entryWithCurrency.displayAmount > 0;
+  /**
+   * Convert book summary to user's default currency for dashboard display
+   */
+  async convertBookSummaryToUserCurrency(
+    bookSummary: {
+      totalIncome: number;
+      totalExpenses: number;
+      netBalance: number;
+      currency: string;
+    },
+    userDefaultCurrency: string,
+    bookId?: string // Add bookId to use book's locked rate
+  ): Promise<{
+    convertedTotalIncome: number;
+    convertedTotalExpenses: number;
+    convertedNetBalance: number;
+    conversionRate: number;
+    convertedCurrency: string;
+  }> {
+    if (bookSummary.currency === userDefaultCurrency) {
+      // No conversion needed
+      return {
+        convertedTotalIncome: bookSummary.totalIncome,
+        convertedTotalExpenses: bookSummary.totalExpenses,
+        convertedNetBalance: bookSummary.netBalance,
+        conversionRate: 1,
+        convertedCurrency: userDefaultCurrency
+      };
+    }
+
+    try {
+      const rate = await currencyService.getExchangeRate(
+        bookSummary.currency,
+        userDefaultCurrency,
+        bookId // Pass bookId to use locked rate
+      );
+
+      if (rate === null) {
+        console.warn(`Could not get rate ${bookSummary.currency} → ${userDefaultCurrency}`);
+        return {
+          convertedTotalIncome: bookSummary.totalIncome,
+          convertedTotalExpenses: bookSummary.totalExpenses,
+          convertedNetBalance: bookSummary.netBalance,
+          conversionRate: 1,
+          convertedCurrency: bookSummary.currency
+        };
+      }
+
+      return {
+        convertedTotalIncome: bookSummary.totalIncome * rate,
+        convertedTotalExpenses: bookSummary.totalExpenses * rate,
+        convertedNetBalance: bookSummary.netBalance * rate,
+        conversionRate: rate,
+        convertedCurrency: userDefaultCurrency
+      };
+    } catch (error) {
+      console.error('Error converting book summary:', error);
+      return {
+        convertedTotalIncome: bookSummary.totalIncome,
+        convertedTotalExpenses: bookSummary.totalExpenses,
+        convertedNetBalance: bookSummary.netBalance,
+        conversionRate: 1,
+        convertedCurrency: bookSummary.currency
+      };
+    }
+  }
+
+  /**
+   * Format entry amount for display using historical rates if available
+   */
+  async formatEntryAmount(
+    entry: Entry,
+    displayCurrency?: string
+  ): Promise<string> {
+    const targetCurrency = displayCurrency || entry.currency;
+    
+    if (entry.currency === targetCurrency) {
+      // No conversion needed
+      const isIncome = entry.amount > 0;
+      const sign = isIncome ? '+' : '-';
+      const formatted = currencyService.formatCurrency(
+        Math.abs(entry.amount),
+        entry.currency
+      );
+      return `${sign}${formatted}`;
+    }
+
+    // Try to use historical rates
+    const conversion = await currencyService.convertWithHistoricalRates(
+      entry.amount,
+      entry.currency,
+      targetCurrency,
+      entry.historicalRates
+    );
+
+    const isIncome = conversion.convertedAmount > 0;
     const sign = isIncome ? '+' : '-';
     const formatted = currencyService.formatCurrency(
-      Math.abs(entryWithCurrency.displayAmount),
-      entryWithCurrency.displayCurrency
+      Math.abs(conversion.convertedAmount),
+      targetCurrency
     );
+
     return `${sign}${formatted}`;
   }
 
-  // Format mixed currency summary
-  formatMixedCurrencySummary(breakdown: { [currency: string]: { income: number; expenses: number; count: number } }): string {
-    const currencies = Object.keys(breakdown);
-    
-    if (currencies.length <= 1) {
-      return ''; // Not mixed currency
+  /**
+   * Aggregate entries from multiple books in user's default currency
+   * Used for dashboard "All Books" view
+   */
+  async aggregateMultiCurrencyEntries(
+    entries: Entry[],
+    targetCurrency: string
+  ): Promise<{
+    totalIncome: number;
+    totalExpenses: number;
+    netBalance: number;
+    currency: string;
+    conversionDetails: Array<{
+      currency: string;
+      count: number;
+      income: number;
+      expenses: number;
+      rate: number;
+    }>;
+  }> {
+    // Group entries by currency
+    const byCurrency: {
+      [currency: string]: {
+        count: number;
+        income: number;
+        expenses: number;
+      };
+    } = {};
+
+    entries.forEach(entry => {
+      if (!byCurrency[entry.currency]) {
+        byCurrency[entry.currency] = { count: 0, income: 0, expenses: 0 };
+      }
+      byCurrency[entry.currency].count++;
+      
+      if (entry.amount > 0) {
+        byCurrency[entry.currency].income += entry.amount;
+      } else {
+        byCurrency[entry.currency].expenses += Math.abs(entry.amount);
+      }
+    });
+
+    // Convert each currency group to target currency
+    let totalIncome = 0;
+    let totalExpenses = 0;
+    const conversionDetails = [];
+
+    for (const [currency, data] of Object.entries(byCurrency)) {
+      let rate = 1;
+      let convertedIncome = data.income;
+      let convertedExpenses = data.expenses;
+
+      if (currency !== targetCurrency) {
+        rate = await currencyService.getExchangeRate(currency, targetCurrency) || 1;
+        convertedIncome = data.income * rate;
+        convertedExpenses = data.expenses * rate;
+      }
+
+      totalIncome += convertedIncome;
+      totalExpenses += convertedExpenses;
+
+      conversionDetails.push({
+        currency,
+        count: data.count,
+        income: data.income,
+        expenses: data.expenses,
+        rate
+      });
     }
 
-    return currencies
-      .map(currency => {
-        const data = breakdown[currency];
-        const net = data.income - data.expenses;
-        return `${currencyService.formatCurrency(net, currency)} (${data.count} entries)`;
-      })
-      .join(' + ');
+    return {
+      totalIncome,
+      totalExpenses,
+      netBalance: totalIncome - totalExpenses,
+      currency: targetCurrency,
+      conversionDetails
+    };
   }
 
-  // Validate currency conversion setup
+  /**
+   * NEW: Change a book's currency and convert all its entries
+   * This is the core function for book currency change feature
+   */
+  async changeBookCurrency(
+    book: Book,
+    entries: Entry[],
+    newCurrency: string,
+    userId: string,
+    customExchangeRate?: number,
+    notes?: string
+  ): Promise<{
+    updatedBook: Book;
+    updatedEntries: Entry[];
+    conversionSummary: {
+      entriesConverted: number;
+      oldCurrency: string;
+      newCurrency: string;
+      exchangeRate: number;
+    };
+  }> {
+    const oldCurrency = book.currency;
+
+    if (oldCurrency === newCurrency) {
+      throw new Error('Book is already in this currency');
+    }
+
+    console.log(`🔄 Changing book currency: ${oldCurrency} → ${newCurrency}`);
+
+    // Step 1: Get exchange rate
+    const exchangeRate = customExchangeRate || 
+      await currencyService.getExchangeRate(oldCurrency, newCurrency) || 1;
+
+    console.log(`   Using exchange rate: 1 ${oldCurrency} = ${exchangeRate} ${newCurrency}`);
+
+    // Step 2: Convert all entries
+    const updatedEntries: Entry[] = [];
+    
+    for (const entry of entries) {
+      const convertedAmount = entry.amount * exchangeRate;
+      
+      // Create conversion history record
+      const conversionRecord: ConversionHistoryEntry = {
+        id: `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        fromCurrency: oldCurrency,
+        fromAmount: entry.amount,
+        toCurrency: newCurrency,
+        toAmount: convertedAmount,
+        exchangeRate,
+        convertedAt: new Date(),
+        convertedBy: userId,
+        reason: ConversionReason.BOOK_CURRENCY_CHANGE,
+        notes: notes
+      };
+
+      // Update entry with new currency and conversion history
+      const updatedEntry: Entry = {
+        ...entry,
+        amount: convertedAmount,
+        currency: newCurrency,
+        conversionHistory: [
+          ...(entry.conversionHistory || []),
+          conversionRecord
+        ],
+        updatedAt: new Date()
+      };
+
+      updatedEntries.push(updatedEntry);
+    }
+
+    // Step 3: Update book with currency history
+    const bookCurrencyHistory: BookCurrencyHistory = {
+      id: `curr_hist_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      fromCurrency: oldCurrency,
+      toCurrency: newCurrency,
+      exchangeRate,
+      changedAt: new Date(),
+      changedBy: userId,
+      affectedEntriesCount: entries.length,
+      notes
+    };
+
+    const updatedBook: Book = {
+      ...book,
+      currency: newCurrency,
+      currencyHistory: [
+        ...(book.currencyHistory || []),
+        bookCurrencyHistory
+      ],
+      updatedAt: new Date()
+    };
+
+    console.log(`✅ Book currency changed successfully`);
+    console.log(`   Entries converted: ${entries.length}`);
+
+    return {
+      updatedBook,
+      updatedEntries,
+      conversionSummary: {
+        entriesConverted: entries.length,
+        oldCurrency,
+        newCurrency,
+        exchangeRate
+      }
+    };
+  }
+
+  /**
+   * Validate currency setup
+   */
   async validateCurrencySetup(): Promise<{
     isValid: boolean;
-    defaultCurrency: string;
+    userDefaultCurrency: string;
     issues: string[];
   }> {
     const issues: string[] = [];
-  const backendCurrency = await this.getBackendCurrency();
-    
+    const userDefaultCurrency = await this.getUserDefaultCurrency();
+
     // Check if currency service is working
     try {
       const testRate = await currencyService.getExchangeRate('USD', 'EUR');
@@ -210,16 +412,73 @@ class CurrencyUtils {
       issues.push('Currency service error: ' + error);
     }
 
-    // Check if default currency is supported
-  const supportedCurrency = currencyService.getCurrencyByCode(backendCurrency);
+    // Check if user's default currency is supported
+    const supportedCurrency = currencyService.getCurrencyByCode(userDefaultCurrency);
     if (!supportedCurrency) {
-  issues.push(`Backend currency ${backendCurrency} not supported`);
+      issues.push(`User default currency ${userDefaultCurrency} not supported`);
     }
 
     return {
       isValid: issues.length === 0,
-  defaultCurrency: backendCurrency,
+      userDefaultCurrency,
       issues
+    };
+  }
+
+  /**
+   * Get conversion preview for book currency change
+   */
+  async getBookCurrencyChangePreview(
+    entries: Entry[],
+    fromCurrency: string,
+    toCurrency: string,
+    customRate?: number
+  ): Promise<{
+    exchangeRate: number;
+    sampleConversions: Array<{
+      originalAmount: number;
+      convertedAmount: number;
+      category: string;
+    }>;
+    totalOriginal: {
+      income: number;
+      expenses: number;
+      balance: number;
+    };
+    totalConverted: {
+      income: number;
+      expenses: number;
+      balance: number;
+    };
+  }> {
+    const rate = customRate || await currencyService.getExchangeRate(fromCurrency, toCurrency) || 1;
+
+    // Calculate totals
+    const totalOriginal = {
+      income: entries.filter(e => e.amount > 0).reduce((sum, e) => sum + e.amount, 0),
+      expenses: entries.filter(e => e.amount < 0).reduce((sum, e) => sum + Math.abs(e.amount), 0),
+      balance: 0
+    };
+    totalOriginal.balance = totalOriginal.income - totalOriginal.expenses;
+
+    const totalConverted = {
+      income: totalOriginal.income * rate,
+      expenses: totalOriginal.expenses * rate,
+      balance: totalOriginal.balance * rate
+    };
+
+    // Get sample conversions (first 5 entries)
+    const sampleConversions = entries.slice(0, 5).map(entry => ({
+      originalAmount: entry.amount,
+      convertedAmount: entry.amount * rate,
+      category: entry.category
+    }));
+
+    return {
+      exchangeRate: rate,
+      sampleConversions,
+      totalOriginal,
+      totalConverted
     };
   }
 }

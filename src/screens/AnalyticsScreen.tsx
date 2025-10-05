@@ -24,6 +24,8 @@ import { Entry, Book } from '../models/types';
 import asyncStorageService from '../services/asyncStorage';
 import { useAuth } from '../contexts/AuthContext';
 import { spacing, borderRadius } from '../theme/materialTheme';
+import currencyUtils from '../utils/currencyUtils';
+import currencyService from '../services/currencyService';
 import { 
   TrendChart, 
   CategoryChart, 
@@ -52,6 +54,7 @@ const AnalyticsScreen: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [insights, setInsights] = useState<FinancialInsights | null>(null);
+  const [userCurrency, setUserCurrency] = useState<string>('USD');
 
   const loadAnalyticsData = useCallback(async () => {
     try {
@@ -70,14 +73,58 @@ const AnalyticsScreen: React.FC = () => {
       console.log('Analytics: Books loaded:', allBooks.length);
       setBooks(allBooks);
       
-      // Load all entries from all books
+      // Get user's default currency
+      const userDefaultCurrency = await currencyUtils.getUserDefaultCurrency();
+      setUserCurrency(userDefaultCurrency);
+      console.log(`📊 Analytics: Using normalized amounts in ${userDefaultCurrency}`);
+      
+      // PERFORMANCE: Load all entries and use pre-converted normalizedAmount
       const allEntriesData: Entry[] = [];
       for (const book of allBooks) {
         const bookEntries = await asyncStorageService.getEntries(book.id);
-        allEntriesData.push(...bookEntries);
+        
+        // Get book's locked rate for consistency check
+        const bookLockedRate = book.lockedExchangeRate;
+        const isBookRateLocked = bookLockedRate && book.targetCurrency === userDefaultCurrency;
+        
+        // Use normalizedAmount for instant analytics (no conversion loop!)
+        for (const entry of bookEntries) {
+          let convertedAmount = entry.amount;
+          
+          // Check if normalized amount exists and uses correct rate
+          const hasNormalizedAmount = entry.normalizedAmount !== undefined && 
+                                      entry.normalizedCurrency === userDefaultCurrency;
+          
+          // FIX: If book has locked rate, verify normalized amount uses the locked rate
+          if (hasNormalizedAmount && isBookRateLocked && entry.conversionRate !== bookLockedRate) {
+            // Recalculate with correct locked rate
+            convertedAmount = entry.amount * bookLockedRate;
+            console.log(`  🔄 Analytics recalc: ${entry.amount} ${entry.currency} × ${bookLockedRate} = ${convertedAmount} ${userDefaultCurrency}`);
+          } else if (hasNormalizedAmount && entry.normalizedAmount !== undefined) {
+            // Use normalized amount (FAST path)
+            convertedAmount = entry.normalizedAmount;
+          } else if (entry.currency !== userDefaultCurrency) {
+            // Fallback for old entries without normalized amount
+            const rate = await currencyService.getExchangeRate(
+              entry.currency,
+              userDefaultCurrency,
+              entry.bookId
+            );
+            
+            if (rate) {
+              convertedAmount = entry.amount * rate;
+            }
+          }
+          
+          allEntriesData.push({
+            ...entry,
+            amount: convertedAmount,
+            currency: userDefaultCurrency
+          });
+        }
       }
       
-      console.log('Analytics: Total entries loaded:', allEntriesData.length);
+      console.log(`✅ Analytics: Loaded ${allEntriesData.length} entries (instant with normalized amounts)`);
       setAllEntries(allEntriesData);
       
       // Calculate insights
@@ -142,9 +189,14 @@ const AnalyticsScreen: React.FC = () => {
     return (
       <Card style={[styles.insightsCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
         <Card.Content>
-          <Title style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-            Financial Overview
-          </Title>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm }}>
+            <Title style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+              Financial Overview
+            </Title>
+            <Chip mode="outlined" compact icon="info">
+              All in {userCurrency}
+            </Chip>
+          </View>
           
           <View style={styles.insightsGrid}>
             <View style={styles.insightItem}>
@@ -155,7 +207,7 @@ const AnalyticsScreen: React.FC = () => {
                 Total Income
               </Text>
               <Text style={[styles.insightValue, { color: theme.colors.primary }]}>
-                {formatCurrency(insights.totalIncome)}
+                {formatCurrency(insights.totalIncome, userCurrency)}
               </Text>
             </View>
 
@@ -167,7 +219,7 @@ const AnalyticsScreen: React.FC = () => {
                 Total Expenses
               </Text>
               <Text style={[styles.insightValue, { color: theme.colors.error }]}>
-                {formatCurrency(insights.totalExpenses)}
+                {formatCurrency(insights.totalExpenses, userCurrency)}
               </Text>
             </View>
 
@@ -189,7 +241,7 @@ const AnalyticsScreen: React.FC = () => {
                 styles.insightValue, 
                 { color: insights.netSavings >= 0 ? theme.colors.primary : theme.colors.error }
               ]}>
-                {formatCurrency(insights.netSavings)}
+                {formatCurrency(insights.netSavings, userCurrency)}
               </Text>
             </View>
 
@@ -213,7 +265,7 @@ const AnalyticsScreen: React.FC = () => {
                 Daily Average Spending:
               </Text>
               <Text style={[styles.additionalInsightValue, { color: theme.colors.onSurface }]}>
-                {formatCurrency(insights.avgDailyExpense)}
+                {formatCurrency(insights.avgDailyExpense, userCurrency)}
               </Text>
             </View>
             
@@ -223,7 +275,7 @@ const AnalyticsScreen: React.FC = () => {
                   Top Expense Category:
                 </Text>
                 <Chip mode="outlined" compact>
-                  {insights.topExpenseCategory} - {formatCurrency(insights.topExpenseCategoryAmount)}
+                  {insights.topExpenseCategory} - {formatCurrency(insights.topExpenseCategoryAmount, userCurrency)}
                 </Chip>
               </View>
             )}

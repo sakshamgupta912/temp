@@ -32,8 +32,11 @@ import { Entry, PaymentMode } from '../models/types';
 import asyncStorageService from '../services/asyncStorage';
 import { spacing, borderRadius } from '../theme/materialTheme';
 import { useCurrency } from '../hooks/useCurrency';
+import { useAuth } from '../contexts/AuthContext';
 import currencyUtils from '../utils/currencyUtils';
 import { EntryDebugger } from '../components/EntryDebugger';
+import { ExchangeRateEditor } from '../components/ExchangeRateEditor';
+import preferencesService from '../services/preferences';
 
 type BookDetailRouteProp = RouteProp<RootStackParamList, 'BookDetail'>;
 type BookDetailNavigationProp = StackNavigationProp<RootStackParamList, 'BookDetail'>;
@@ -46,6 +49,7 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
   const { bookId, bookName } = route.params;
   const navigation = useNavigation<BookDetailNavigationProp>();
   const theme = useTheme();
+  const { user } = useAuth();
 
   const [entries, setEntries] = useState<Entry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -53,6 +57,9 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
   const [totalIncome, setTotalIncome] = useState(0);
   const [totalExpenses, setTotalExpenses] = useState(0);
   const [menuVisible, setMenuVisible] = useState<string | null>(null);
+  const [bookCurrency, setBookCurrency] = useState<string>('USD'); // Track book's currency
+  const [userDefaultCurrency, setUserDefaultCurrency] = useState<string>('USD'); // User's default currency
+  const [showRateEditor, setShowRateEditor] = useState(false);
   const [formattedTotals, setFormattedTotals] = useState<{
     income: string;
     expenses: string;
@@ -66,6 +73,22 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
     try {
       setIsLoading(true);
       console.log('BookDetail: Loading entries for book:', bookId);
+      
+      // Load book details to get its currency
+      if (!user) {
+        console.warn('BookDetail: No user found');
+        return;
+      }
+      
+      const books = await asyncStorageService.getBooks(user.id);
+      const currentBook = books.find(b => b.id === bookId);
+      const currency = currentBook?.currency || 'USD';
+      setBookCurrency(currency);
+      console.log(`BookDetail: Book "${bookName}" uses currency: ${currency}`);
+      
+      // Load user's default currency
+      const prefs = await preferencesService.getPreferences();
+      setUserDefaultCurrency(prefs.currency);
       
       const bookEntries = await asyncStorageService.getEntries(bookId);
       console.log('BookDetail: Entries loaded:', bookEntries.length);
@@ -86,11 +109,11 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
       setTotalIncome(income);
       setTotalExpenses(expenses);
       
-      // Format totals for display
-      const formattedIncome = await formatAmount(income);
-      const formattedExpenses = await formatAmount(expenses);
+      // Format totals for display in book's currency
+      const formattedIncome = await formatAmount(income, currency);
+      const formattedExpenses = await formatAmount(expenses, currency);
       const balance = income - expenses;
-      const formattedBalance = await formatAmount(Math.abs(balance));
+      const formattedBalance = await formatAmount(Math.abs(balance), currency);
       
       setFormattedTotals({
         income: formattedIncome,
@@ -217,10 +240,11 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
   // Use currency utilities (all amounts are in INR)
   const { formatAmount } = useCurrency();
 
-  // Format entry with its original currency
+  // Format entry in the book's currency
   const formatEntryAmount = useCallback(async (entry: Entry) => {
-    return await currencyUtils.formatEntryAmount(entry);
-  }, []);
+    // Use book's currency for display (all entries in a book should use same currency)
+    return await currencyUtils.formatEntryAmount(entry, bookCurrency);
+  }, [bookCurrency]);
 
   // Memoized calculations for summary data
   const summaryData = useMemo(() => {
@@ -260,7 +284,7 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
               <Text style={[styles.entryAmount, {
                 color: isIncome ? theme.colors.primary : theme.colors.error
               }]}>
-                <EntryAmountText entry={entry} />
+                <EntryAmountText entry={entry} bookCurrency={bookCurrency} />
               </Text>
               <Text style={[styles.entryDescription, { color: theme.colors.onSurface }]}>
                 {description}
@@ -399,6 +423,48 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
       <View style={styles.summaryContainer}>
         <Card style={[styles.summaryCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
           <Card.Content style={styles.summaryContent}>
+            {/* Currency Header - Only show exchange rate button if currencies differ */}
+            {bookCurrency !== userDefaultCurrency ? (
+              <Pressable 
+                onPress={() => setShowRateEditor(true)}
+                style={styles.currencyHeader}
+              >
+                <View style={styles.currencyInfo}>
+                  <MaterialIcons name="account-balance-wallet" size={18} color={theme.colors.primary} />
+                  <Text variant="labelLarge" style={[styles.currencyLabel, { color: theme.colors.onSurfaceVariant }]}>
+                    Book Currency
+                  </Text>
+                </View>
+                <Chip
+                  icon="swap-horiz"
+                  mode="flat"
+                  style={{ backgroundColor: theme.colors.secondaryContainer }}
+                  textStyle={{ color: theme.colors.onSecondaryContainer, fontWeight: '600' }}
+                  onPress={() => setShowRateEditor(true)}
+                >
+                  {bookCurrency}
+                </Chip>
+              </Pressable>
+            ) : (
+              <View style={styles.currencyHeader}>
+                <View style={styles.currencyInfo}>
+                  <MaterialIcons name="account-balance-wallet" size={18} color={theme.colors.primary} />
+                  <Text variant="labelLarge" style={[styles.currencyLabel, { color: theme.colors.onSurfaceVariant }]}>
+                    Book Currency
+                  </Text>
+                </View>
+                <Chip
+                  mode="flat"
+                  style={{ backgroundColor: theme.colors.surfaceVariant }}
+                  textStyle={{ color: theme.colors.onSurfaceVariant, fontWeight: '600' }}
+                >
+                  {bookCurrency}
+                </Chip>
+              </View>
+            )}
+            
+            <Divider style={{ marginVertical: spacing.sm }} />
+            
             <View style={styles.summaryRow}>
               <View style={styles.summaryItem}>
                 <Text style={[styles.summaryLabel, { color: theme.colors.onSurface }]}>
@@ -434,7 +500,15 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
         </Card>
       </View>
 
-
+      {/* Exchange Rate Editor Dialog */}
+      <ExchangeRateEditor
+        visible={showRateEditor}
+        onDismiss={() => setShowRateEditor(false)}
+        baseCurrency={bookCurrency}
+        userDefaultCurrency={userDefaultCurrency}
+        bookId={bookId}
+        onRateUpdated={() => loadEntries()}
+      />
 
       {/* Entries List */}
       <FlatList
@@ -483,6 +557,21 @@ const styles = StyleSheet.create({
   },
   summaryContent: {
     padding: spacing.lg,
+  },
+  currencyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.xs,
+  },
+  currencyInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  currencyLabel: {
+    fontSize: 13,
+    fontWeight: '500',
   },
   summaryRow: {
     flexDirection: 'row',
@@ -598,13 +687,14 @@ const styles = StyleSheet.create({
 });
 
 // Component to handle async entry amount formatting
-const EntryAmountText: React.FC<{ entry: Entry }> = ({ entry }) => {
+const EntryAmountText: React.FC<{ entry: Entry; bookCurrency: string }> = ({ entry, bookCurrency }) => {
   const [formattedAmount, setFormattedAmount] = useState('...');
   
   useEffect(() => {
     const formatAmount = async () => {
       try {
-        const formatted = await currencyUtils.formatEntryAmount(entry);
+        // Format entry in book's currency (overrides entry.currency if different)
+        const formatted = await currencyUtils.formatEntryAmount(entry, bookCurrency);
         setFormattedAmount(formatted);
       } catch (error) {
         console.error('Error formatting entry amount:', error);
@@ -613,7 +703,7 @@ const EntryAmountText: React.FC<{ entry: Entry }> = ({ entry }) => {
     };
     
     formatAmount();
-  }, [entry]);
+  }, [entry, bookCurrency]);
   
   return <Text>{formattedAmount}</Text>;
 };

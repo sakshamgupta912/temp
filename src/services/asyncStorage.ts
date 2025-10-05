@@ -83,10 +83,16 @@ class AsyncStorageService {
         throw new Error('Book name and userId are required');
       }
 
+      // NEW: Validate currency is provided
+      if (!book.currency) {
+        throw new Error('Book currency is required');
+      }
+
       const books = await this.getBooks(book.userId);
       const newBook: Book = {
         id: `book_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         ...book,
+        currencyHistory: book.currencyHistory || [], // Initialize currency history
         createdAt: new Date(),
         updatedAt: new Date()
       };
@@ -115,6 +121,24 @@ class AsyncStorageService {
     } catch (error) {
       console.error('AsyncStorage: Error creating book:', error);
       this.handleError('createBook', error);
+    }
+  }
+
+  async getBookById(bookId: string): Promise<Book | null> {
+    try {
+      const stored = await AsyncStorage.getItem(STORAGE_KEYS.BOOKS);
+      if (!stored) return null;
+
+      const allBooks: Book[] = JSON.parse(stored).map((book: any) => ({
+        ...book,
+        createdAt: new Date(book.createdAt),
+        updatedAt: new Date(book.updatedAt)
+      }));
+
+      return allBooks.find(book => book.id === bookId) || null;
+    } catch (error) {
+      console.error('AsyncStorage: Error getting book by ID:', error);
+      return null;
     }
   }
 
@@ -178,12 +202,24 @@ class AsyncStorageService {
       const bookIndex = books.findIndex(book => book.id === bookId);
       
       if (bookIndex >= 0) {
+        const userId = books[bookIndex].userId;
         books[bookIndex] = {
           ...books[bookIndex],
           ...updates,
           updatedAt: new Date()
         };
         await AsyncStorage.setItem(STORAGE_KEYS.BOOKS, JSON.stringify(books));
+        
+        // Invalidate books cache for this user
+        console.log(`Invalidating cache for updated book with userId: ${userId}`);
+        await dataCacheService.invalidatePattern(`books:userId:${userId}`);
+        await dataCacheService.invalidatePattern(`books`);
+        
+        // Also invalidate entries cache since locked rate affects calculations
+        if (updates.lockedExchangeRate !== undefined) {
+          console.log(`Locked rate changed, invalidating entries cache for bookId: ${bookId}`);
+          await dataCacheService.invalidatePattern(`entries:bookId:${bookId}`);
+        }
       }
     } catch (error) {
       console.error('Error updating book:', error);
@@ -276,6 +312,11 @@ class AsyncStorageService {
         throw new Error('Entry category and date are required');
       }
 
+      // NEW: Validate currency is provided
+      if (!entry.currency) {
+        throw new Error('Entry currency is required (must match book currency)');
+      }
+
       // Get existing entries to append to
       const allEntriesStored = await AsyncStorage.getItem(STORAGE_KEYS.ENTRIES);
       const allEntries: Entry[] = allEntriesStored ? JSON.parse(allEntriesStored) : [];
@@ -283,6 +324,8 @@ class AsyncStorageService {
       const newEntry: Entry = {
         id: `entry_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         ...entry,
+        historicalRates: entry.historicalRates, // Preserve historical rates if provided
+        conversionHistory: entry.conversionHistory || [], // Initialize conversion history
         createdAt: new Date(),
         updatedAt: new Date()
       };

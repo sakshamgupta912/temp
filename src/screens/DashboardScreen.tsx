@@ -56,42 +56,89 @@ const DashboardScreen: React.FC = () => {
       const userBooks = await asyncStorageService.getBooks(user.id);
       setBooks(userBooks);
 
-      // Get user display currency for UI
-      const displayCurrency = await currencyUtils.getUserDisplayCurrency();
-      console.log(`Dashboard: Using ${displayCurrency} as display currency`);
+      // Get user's default currency
+      const userDefaultCurrency = await currencyUtils.getUserDefaultCurrency();
+      console.log(`📊 Dashboard: Aggregating ${userBooks.length} books in ${userDefaultCurrency} (using normalized amounts)`);
 
-      // Calculate summaries for each book
+      // PERFORMANCE: Calculate summaries using normalized amounts (instant)
       const summaries: BookSummary[] = [];
-      let totalConverted = 0;
+      let totalInUserCurrency = 0;
 
       for (const book of userBooks) {
         const entries = await asyncStorageService.getEntries(book.id);
-        console.log(`Dashboard: Book "${book.name}" (${book.id}) has ${entries.length} entries`);
+        console.log(`📖 Book "${book.name}" (${book.currency}): ${entries.length} entries`);
         
-        // Use currency utilities for proper mixed currency calculation
-        // Note: entries should already be stored in default currency (amount field)
-        // but may have original currency info for display
-        const totals = await currencyUtils.calculateTotals(entries);
+        // Get book's current locked rate to check consistency
+        const bookLockedRate = book.lockedExchangeRate;
+        const isBookRateLocked = bookLockedRate && book.targetCurrency === userDefaultCurrency;
         
-        console.log(`Dashboard: Book "${book.name}" totals:`, totals);
+        // PERFORMANCE: Use normalizedAmount for instant aggregation
+        let totalIncome = 0;
+        let totalExpenses = 0;
+        
+        for (const entry of entries) {
+          let amount = entry.amount;
+          
+          // Check if normalized amount is valid and uses correct rate
+          const hasNormalizedAmount = entry.normalizedAmount !== undefined && 
+                                      entry.normalizedCurrency === userDefaultCurrency;
+          
+          // FIX: If book has locked rate, verify normalized amount uses the locked rate
+          if (hasNormalizedAmount && isBookRateLocked && entry.conversionRate !== bookLockedRate) {
+            console.log(`  ⚠️ Rate mismatch! Entry has rate ${entry.conversionRate}, but book locked rate is ${bookLockedRate}. Recalculating...`);
+            // Recalculate with correct locked rate
+            amount = entry.amount * bookLockedRate;
+            console.log(`  🔄 Recalculated: ${entry.amount} ${entry.currency} × ${bookLockedRate} = ${amount} ${userDefaultCurrency}`);
+          } else if (hasNormalizedAmount && entry.normalizedAmount !== undefined) {
+            // Use normalized amount (FAST path)
+            amount = entry.normalizedAmount;
+            console.log(`  ✅ Using normalized: ${entry.amount} ${entry.currency} → ${amount} ${userDefaultCurrency} (rate: ${entry.conversionRate || 'N/A'})`);
+          } else if (entry.currency !== userDefaultCurrency) {
+            // Fallback: convert on-the-fly for old entries without normalized amount
+            console.log(`  ⚠️ No normalized amount, converting: ${entry.amount} ${entry.currency} → ${userDefaultCurrency}`);
+            const rate = await currencyService.getExchangeRate(
+              entry.currency,
+              userDefaultCurrency,
+              entry.bookId
+            );
+            if (rate) {
+              amount = entry.amount * rate;
+              console.log(`  💱 Converted: ${entry.amount} × ${rate} = ${amount} ${userDefaultCurrency}`);
+            }
+          } else {
+            console.log(`  ℹ️ Same currency, no conversion: ${entry.amount} ${entry.currency}`);
+          }
+          
+          if (amount >= 0) {
+            totalIncome += amount;
+          } else {
+            totalExpenses += Math.abs(amount);
+          }
+        }
+        
+        const netBalance = totalIncome - totalExpenses;
+        
+        console.log(`  Income: ${totalIncome} ${userDefaultCurrency}`);
+        console.log(`  Expenses: ${totalExpenses} ${userDefaultCurrency}`);
+        console.log(`  Balance: ${netBalance} ${userDefaultCurrency}`);
         
         summaries.push({
           bookId: book.id,
-          totalIncome: totals.totalIncome,
-          totalExpenses: totals.totalExpenses,
-          netBalance: totals.netBalance, // Already in default currency
+          bookCurrency: book.currency,
+          totalIncome,
+          totalExpenses,
+          netBalance,
           entryCount: entries.length
         });
         
-        totalConverted += totals.netBalance;
+        totalInUserCurrency += netBalance;
       }
 
-      console.log('Dashboard: Calculated summaries with currency conversion:', summaries);
-      console.log(`Dashboard: Total balance (in INR):`, totalConverted);
+      console.log(`✅ Dashboard: Total balance: ${totalInUserCurrency} ${userDefaultCurrency} (instant calculation)`);
       setBookSummaries(summaries);
-      setTotalBalance(totalConverted);
+      setTotalBalance(totalInUserCurrency);
     } catch (error) {
-      console.error('Error loading dashboard data:', error);
+      console.error('❌ Dashboard: Error loading data:', error);
     } finally {
       setIsLoading(false);
     }
@@ -120,18 +167,22 @@ const DashboardScreen: React.FC = () => {
     }, [loadDashboardData])
   );
 
-  // Format currency for display (from INR stored amounts)
+  // Format currency for display (amounts are in user's default currency)
   const [formattedAmounts, setFormattedAmounts] = useState<{[key: string]: string}>({});
 
   useEffect(() => {
     const formatAllAmounts = async () => {
+      // Get user's default currency to ensure proper symbol display
+      const userDefaultCurrency = await currencyUtils.getUserDefaultCurrency();
+      
       const amounts: {[key: string]: string} = {};
-      amounts.totalBalance = await formatAmount(Math.abs(totalBalance));
+      // Explicitly pass currency to ensure correct symbol
+      amounts.totalBalance = await formatAmount(Math.abs(totalBalance), userDefaultCurrency);
       
       for (const summary of bookSummaries) {
-        amounts[`balance_${summary.bookId}`] = await formatAmount(Math.abs(summary.netBalance));
-        amounts[`income_${summary.bookId}`] = await formatAmount(summary.totalIncome);
-        amounts[`expenses_${summary.bookId}`] = await formatAmount(summary.totalExpenses);
+        amounts[`balance_${summary.bookId}`] = await formatAmount(Math.abs(summary.netBalance), userDefaultCurrency);
+        amounts[`income_${summary.bookId}`] = await formatAmount(summary.totalIncome, userDefaultCurrency);
+        amounts[`expenses_${summary.bookId}`] = await formatAmount(summary.totalExpenses, userDefaultCurrency);
       }
       
       setFormattedAmounts(amounts);

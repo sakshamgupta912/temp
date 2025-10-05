@@ -211,8 +211,21 @@ export const getFinancialInsights = (entries: Entry[]): FinancialInsights => {
 };
 
 // Format currency for display
-export const formatCurrency = (amount: number): string => {
-  return `₹${Math.abs(amount).toLocaleString('en-IN')}`;
+// Import currencyService at the top of the file if not already imported
+export const formatCurrency = (amount: number, currencyCode?: string): string => {
+  // Fallback to simple formatting if no currency specified
+  if (!currencyCode) {
+    return `₹${Math.abs(amount).toLocaleString('en-IN')}`;
+  }
+  
+  // Use currencyService for proper formatting
+  try {
+    const currencyService = require('../services/currencyService').default;
+    return currencyService.formatCurrency(Math.abs(amount), currencyCode);
+  } catch (error) {
+    // Fallback if currencyService is not available
+    return `${Math.abs(amount).toLocaleString('en-IN')} ${currencyCode}`;
+  }
 };
 
 // Format percentage for display

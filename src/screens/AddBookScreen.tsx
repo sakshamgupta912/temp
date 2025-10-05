@@ -7,7 +7,8 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  Dimensions
+  Dimensions,
+  Pressable
 } from 'react-native';
 import { 
   TextInput, 
@@ -40,6 +41,13 @@ const AddBookScreen: React.FC = () => {
   const [currency, setCurrency] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   const [nameError, setNameError] = useState('');
+  const [exchangeRates, setExchangeRates] = useState<{ [key: string]: number } | null>(null);
+  const [loadingRates, setLoadingRates] = useState(false);
+  const [showRates, setShowRates] = useState(false);
+  const [userDefaultCurrency, setUserDefaultCurrency] = useState<string>('USD');
+  const [lockedExchangeRate, setLockedExchangeRate] = useState<number | null>(null);
+  const [customRate, setCustomRate] = useState<string>(''); // For editing
+  const [isEditingRate, setIsEditingRate] = useState(false);
   const theme = useTheme();
   const { width } = Dimensions.get('window');
 
@@ -49,9 +57,11 @@ const AddBookScreen: React.FC = () => {
       try {
         const prefs = await preferencesService.getPreferences();
         setCurrency(prefs.currency);
+        setUserDefaultCurrency(prefs.currency); // Store user's default currency
       } catch (error) {
         console.error('Error loading default currency:', error);
         setCurrency('USD'); // fallback
+        setUserDefaultCurrency('USD');
       }
     };
     loadDefaultCurrency();
@@ -81,6 +91,41 @@ const AddBookScreen: React.FC = () => {
     }
   };
 
+  // Load exchange rates when currency changes
+  const loadExchangeRates = async (currencyCode: string) => {
+    if (!currencyCode) return;
+    
+    try {
+      setLoadingRates(true);
+      const rates = await currencyService.captureHistoricalRates(currencyCode);
+      setExchangeRates(rates.rates);
+      console.log(`Loaded exchange rates for ${currencyCode}:`, Object.keys(rates.rates).length, 'currencies');
+      
+      // Set the locked rate for book currency → user default currency
+      if (currencyCode !== userDefaultCurrency && rates.rates[userDefaultCurrency]) {
+        const rate = rates.rates[userDefaultCurrency];
+        setLockedExchangeRate(rate);
+        setCustomRate(rate.toFixed(6));
+        console.log(`Locked exchange rate: 1 ${currencyCode} = ${rate} ${userDefaultCurrency}`);
+      } else if (currencyCode === userDefaultCurrency) {
+        setLockedExchangeRate(1);
+        setCustomRate('1.000000');
+      }
+    } catch (error) {
+      console.error('Error loading exchange rates:', error);
+      setExchangeRates(null);
+    } finally {
+      setLoadingRates(false);
+    }
+  };
+
+  // Load rates when currency changes
+  React.useEffect(() => {
+    if (currency) {
+      loadExchangeRates(currency);
+    }
+  }, [currency]);
+
   const handleCreateBook = async () => {
     if (!user) {
       Alert.alert('Error', 'User not authenticated');
@@ -101,14 +146,35 @@ const AddBookScreen: React.FC = () => {
         userId: user.id
       });
 
+      // NEW: Currency is now MANDATORY (must match the new architecture)
+      if (!currency) {
+        Alert.alert('Error', 'Please select a currency for this book');
+        return;
+      }
+
+      console.log('📘 Creating book with locked exchange rate:', {
+        currency,
+        userDefaultCurrency,
+        lockedExchangeRate,
+        targetCurrency: currency !== userDefaultCurrency ? userDefaultCurrency : undefined
+      });
+
       const book = await asyncStorageService.createBook({
         name: name.trim(),
         description: description.trim(),
-        currency: currency || undefined, // Only set if different from default
-        userId: user.id
+        currency: currency, // REQUIRED: Book must have a currency
+        userId: user.id,
+        lockedExchangeRate: lockedExchangeRate || undefined,
+        targetCurrency: currency !== userDefaultCurrency ? userDefaultCurrency : undefined,
+        rateLockedAt: lockedExchangeRate ? new Date() : undefined
       });
 
-      console.log('AddBook: Book created successfully:', book);
+      console.log('✅ Book created successfully with rate:', {
+        bookId: book.id,
+        currency: book.currency,
+        lockedExchangeRate: book.lockedExchangeRate,
+        targetCurrency: book.targetCurrency
+      });
       Alert.alert(
         'Success',
         `"${book.name}" has been created successfully!`,
@@ -254,13 +320,138 @@ const AddBookScreen: React.FC = () => {
                 <CurrencyPicker
                   selectedCurrency={currency}
                   onCurrencySelect={(selectedCurrency) => setCurrency(selectedCurrency.code)}
-                  label="Currency (Optional)"
+                  label="Currency (Required)"
                   showFlag={true}
                   style={styles.currencyPicker}
                 />
                 <HelperText type="info" visible={true}>
-                  Leave empty to use your default currency preference
+                  All entries in this book will use this currency. Choose carefully - this determines your book's base currency.
                 </HelperText>
+
+                {/* Exchange Rate Display - Only show if book currency differs from user's default */}
+                {currency && currency !== userDefaultCurrency && (
+                  <Surface style={[styles.ratesSection, { backgroundColor: theme.colors.surfaceVariant }]} elevation={0}>
+                    <Pressable onPress={() => setShowRates(!showRates)} style={styles.ratesToggle}>
+                      <View style={styles.ratesToggleContent}>
+                        <View style={styles.ratesToggleLeft}>
+                          <MaterialIcons name="trending-up" size={18} color={theme.colors.primary} />
+                          <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, marginLeft: spacing.xs }}>
+                            View Exchange Rate
+                          </Text>
+                        </View>
+                        <MaterialIcons 
+                          name={showRates ? "expand-less" : "expand-more"} 
+                          size={24} 
+                          color={theme.colors.onSurfaceVariant} 
+                        />
+                      </View>
+                    </Pressable>
+                    
+                    {showRates && (
+                      <View style={styles.ratesContent}>
+                        {loadingRates ? (
+                          <Text style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', padding: spacing.md }}>
+                            Loading rate...
+                          </Text>
+                        ) : lockedExchangeRate ? (
+                          <View style={styles.rateDisplay}>
+                            {!isEditingRate ? (
+                              <>
+                                <View style={styles.rateItem}>
+                                  <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 14 }}>
+                                    1 {currency} =
+                                  </Text>
+                                  <Text style={{ color: theme.colors.onSurface, fontSize: 18, fontWeight: '600' }}>
+                                    {lockedExchangeRate.toFixed(6)} {userDefaultCurrency}
+                                  </Text>
+                                </View>
+                                <View style={{ flexDirection: 'row', gap: spacing.xs, marginTop: spacing.sm }}>
+                                  <Button 
+                                    mode="outlined" 
+                                    icon="pencil"
+                                    onPress={() => setIsEditingRate(true)}
+                                    compact
+                                  >
+                                    Edit Rate
+                                  </Button>
+                                  <Button 
+                                    mode="text" 
+                                    icon="refresh"
+                                    onPress={() => {
+                                      if (exchangeRates && exchangeRates[userDefaultCurrency]) {
+                                        const apiRate = exchangeRates[userDefaultCurrency];
+                                        setLockedExchangeRate(apiRate);
+                                        setCustomRate(apiRate.toFixed(6));
+                                      }
+                                    }}
+                                    compact
+                                  >
+                                    Reset to API
+                                  </Button>
+                                </View>
+                              </>
+                            ) : (
+                              <>
+                                <TextInput
+                                  mode="outlined"
+                                  label={`Exchange Rate (1 ${currency} = ? ${userDefaultCurrency})`}
+                                  value={customRate}
+                                  onChangeText={setCustomRate}
+                                  keyboardType="decimal-pad"
+                                  dense
+                                  style={{ marginBottom: spacing.sm }}
+                                />
+                                <View style={{ flexDirection: 'row', gap: spacing.xs }}>
+                                  <Button 
+                                    mode="outlined" 
+                                    onPress={() => {
+                                      setIsEditingRate(false);
+                                      setCustomRate(lockedExchangeRate.toFixed(6));
+                                    }}
+                                    compact
+                                    style={{ flex: 1 }}
+                                  >
+                                    Cancel
+                                  </Button>
+                                  <Button 
+                                    mode="contained" 
+                                    onPress={() => {
+                                      const newRate = parseFloat(customRate);
+                                      if (!isNaN(newRate) && newRate > 0) {
+                                        setLockedExchangeRate(newRate);
+                                        setIsEditingRate(false);
+                                      } else {
+                                        Alert.alert('Invalid Rate', 'Please enter a valid positive number');
+                                      }
+                                    }}
+                                    compact
+                                    style={{ flex: 1 }}
+                                  >
+                                    Save
+                                  </Button>
+                                </View>
+                              </>
+                            )}
+                            <HelperText type="info" visible={true} style={{ fontSize: 11, marginTop: spacing.xs }}>
+                              This rate will be locked at book creation and used for all conversions to {userDefaultCurrency}. You can change it later.
+                            </HelperText>
+                          </View>
+                        ) : (
+                          <Text style={{ color: theme.colors.error, textAlign: 'center', padding: spacing.md }}>
+                            Failed to load rate
+                          </Text>
+                        )}
+                      </View>
+                    )}
+                  </Surface>
+                )}
+                
+                {/* Show helpful message if book currency matches user's default */}
+                {currency && currency === userDefaultCurrency && (
+                  <HelperText type="info" visible={true}>
+                    This book uses your default currency ({userDefaultCurrency}), so no conversion is needed.
+                  </HelperText>
+                )}
               </View>
 
             </View>
@@ -458,6 +649,37 @@ const styles = StyleSheet.create({
   },
   currencyPicker: {
     marginVertical: 0,
+  },
+  // Exchange rates styles
+  ratesSection: {
+    marginTop: spacing.md,
+    borderRadius: borderRadius.sm,
+    overflow: 'hidden',
+  },
+  ratesToggle: {
+    padding: spacing.md,
+  },
+  ratesToggleContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  ratesToggleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  ratesContent: {
+    padding: spacing.md,
+  },
+  rateDisplay: {
+    alignItems: 'center',
+  },
+  rateItem: {
+    backgroundColor: 'rgba(255,255,255,0.5)',
+    padding: spacing.md,
+    borderRadius: borderRadius.xs,
+    alignItems: 'center',
+    width: '100%',
   },
 });
 

@@ -10,15 +10,19 @@ import {
 import { auth } from '../services/firebase';
 import { User } from '../models/types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import preferencesService from '../services/preferences';
 
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
   signInWithGoogle: () => Promise<void>;
-  signInAsDemo: () => Promise<void>;
+  signInAsDemo: (defaultCurrency?: string) => Promise<void>;
   logout: () => Promise<void>;
   error: string | null;
+  // Currency helpers
+  getUserDefaultCurrency: () => Promise<string>;
+  setUserDefaultCurrency: (currency: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -39,11 +43,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Set up Firebase auth state listener (for future Firebase integration)
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
+        // Get user's default currency from preferences
+        const prefs = await preferencesService.getPreferences();
+        
         const user: User = {
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
           displayName: firebaseUser.displayName || undefined,
           photoURL: firebaseUser.photoURL || undefined,
+          defaultCurrency: prefs.currency, // Add default currency
           createdAt: new Date(firebaseUser.metadata.creationTime || Date.now())
         };
         setUser(user);
@@ -98,20 +106,25 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const signInAsDemo = async () => {
+  const signInAsDemo = async (defaultCurrency: string = 'USD') => {
     try {
       setError(null);
       setIsLoading(true);
+      
+      // Set the default currency in preferences
+      await preferencesService.setCurrency(defaultCurrency);
       
       const demoUser: User = {
         id: 'demo_user_123',
         email: 'demo@example.com',
         displayName: 'Demo User',
+        defaultCurrency: defaultCurrency,
         createdAt: new Date()
       };
       
       await AsyncStorage.setItem('user', JSON.stringify(demoUser));
       setUser(demoUser);
+      console.log(`✅ Demo user signed in with default currency: ${defaultCurrency}`);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Demo sign-in failed';
       setError(errorMessage);
@@ -139,6 +152,32 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
+  // Currency helper methods
+  const getUserDefaultCurrency = async (): Promise<string> => {
+    if (user?.defaultCurrency) {
+      return user.defaultCurrency;
+    }
+    // Fallback to preferences
+    const prefs = await preferencesService.getPreferences();
+    return prefs.currency;
+  };
+
+  const setUserDefaultCurrency = async (currency: string): Promise<void> => {
+    // Update preferences
+    await preferencesService.setCurrency(currency);
+    
+    // Update user object
+    if (user) {
+      const updatedUser: User = {
+        ...user,
+        defaultCurrency: currency
+      };
+      setUser(updatedUser);
+      await AsyncStorage.setItem('user', JSON.stringify(updatedUser));
+      console.log(`✅ User default currency updated to: ${currency}`);
+    }
+  };
+
   const value: AuthContextType = {
     user,
     isLoading,
@@ -146,7 +185,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     signInWithGoogle,
     signInAsDemo,
     logout,
-    error
+    error,
+    getUserDefaultCurrency,
+    setUserDefaultCurrency
   };
 
   return (

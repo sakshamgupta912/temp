@@ -1,5 +1,5 @@
 // Currency Hook - React hook for currency formatting and display currency handling
-// NOTE: All amounts are stored in INR, this hook handles display currency conversion
+// NOTE: All amounts are stored in their respective currencies, this hook handles display
 import { useCallback, useEffect, useState } from 'react';
 import preferencesService from '../services/preferences';
 import currencyService from '../services/currencyService';
@@ -7,8 +7,8 @@ import currencyUtils from '../utils/currencyUtils';
 import { Book } from '../models/types';
 
 interface CurrencyHookReturn {
-  // Formatting functions (amounts should be in INR, will be converted for display)
-  formatAmount: (inrAmount: number, displayCurrency?: string) => Promise<string>;
+  // Formatting functions
+  formatAmount: (amount: number, displayCurrency?: string) => Promise<string>;
   formatAmountSync: (amount: number, currency: string) => string;
   getSymbol: (currency?: string) => string;
   getCurrencyCode: (currency?: string) => string;
@@ -22,15 +22,15 @@ interface CurrencyHookReturn {
 }
 
 export const useCurrency = (): CurrencyHookReturn => {
-  const [userDisplayCurrency, setUserDisplayCurrency] = useState<string>('INR');
-  const [displaySymbol, setDisplaySymbol] = useState<string>('₹');
+  const [userDisplayCurrency, setUserDisplayCurrency] = useState<string>('USD');
+  const [displaySymbol, setDisplaySymbol] = useState<string>('$');
   const [isLoading, setIsLoading] = useState(true);
 
   // Load user's display currency preference on hook initialization
   useEffect(() => {
     const loadDisplayCurrency = async () => {
       try {
-        const displayCurrency = await currencyUtils.getUserDisplayCurrency();
+        const displayCurrency = await currencyUtils.getUserDefaultCurrency();
         setUserDisplayCurrency(displayCurrency);
         const currencyData = currencyService.getCurrencyByCode(displayCurrency);
         setDisplaySymbol(currencyData?.symbol || '₹');
@@ -57,11 +57,10 @@ export const useCurrency = (): CurrencyHookReturn => {
     return currency || userDisplayCurrency;
   }, [userDisplayCurrency]);
 
-  // Format amount (convert from INR to display currency)
-  const formatAmount = useCallback(async (inrAmount: number, displayCurrency?: string): Promise<string> => {
+  // Format amount in the given currency (no conversion needed - amounts already in their currency)
+  const formatAmount = useCallback(async (amount: number, displayCurrency?: string): Promise<string> => {
     const targetCurrency = displayCurrency || userDisplayCurrency;
-    const convertedAmount = await currencyUtils.convertFromINR(inrAmount, targetCurrency);
-    return currencyService.formatCurrency(convertedAmount, targetCurrency, true);
+    return currencyService.formatCurrency(amount, targetCurrency, true);
   }, [userDisplayCurrency]);
 
   // Synchronous format (for when currency is already known)

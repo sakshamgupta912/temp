@@ -221,9 +221,27 @@ class CurrencyService {
   }
 
   // Get exchange rate between two currencies
-  async getExchangeRate(fromCurrency: string, toCurrency: string): Promise<number | null> {
+  // Priority: 1) Book-specific locked rate, 2) Custom rate, 3) API rate
+  async getExchangeRate(fromCurrency: string, toCurrency: string, bookId?: string): Promise<number | null> {
     if (fromCurrency === toCurrency) return 1;
 
+    // First, check for book-specific locked rate
+    if (bookId) {
+      const bookRate = await this.getBookLockedRate(bookId, fromCurrency, toCurrency);
+      if (bookRate !== null) {
+        console.log(`Using book-locked rate for ${bookId}: 1 ${fromCurrency} = ${bookRate} ${toCurrency}`);
+        return bookRate;
+      }
+    }
+
+    // Second, check for custom exchange rate (manual override)
+    const customRate = await this.getCustomExchangeRate(fromCurrency, toCurrency, bookId);
+    if (customRate) {
+      console.log(`Using custom rate: 1 ${fromCurrency} = ${customRate.rate} ${toCurrency}`);
+      return customRate.rate;
+    }
+
+    // Finally, fall back to API rates
     // Load cache on first use
     if (this.exchangeRatesCache.size === 0) {
       await this.loadCachedRates();
@@ -325,6 +343,299 @@ class CurrencyService {
         console.error(`Failed to preload rates for ${currency}:`, error);
       }
     }
+  }
+
+  /**
+   * NEW: Capture historical exchange rates snapshot
+   * Call this when creating an entry to preserve rates at that point in time
+   */
+  async captureHistoricalRates(baseCurrency: string): Promise<{
+    capturedAt: Date;
+    baseCurrency: string;
+    rates: { [currencyCode: string]: number };
+  }> {
+    try {
+      console.log(`📸 Capturing historical rates for ${baseCurrency}...`);
+      
+      // Fetch rates from API (will use cache if available)
+      await this.fetchExchangeRates(baseCurrency);
+      
+      const rates: { [currencyCode: string]: number } = {};
+      const cachedRates = this.exchangeRatesCache.get(baseCurrency);
+      
+      if (cachedRates) {
+        // Store rates for major currencies to save storage space
+        const majorCurrencies = [
+          'USD', 'EUR', 'GBP', 'INR', 'JPY', 'CNY', 'AUD', 'CAD', 'CHF', 
+          'SEK', 'NOK', 'SGD', 'HKD', 'KRW', 'MXN', 'BRL', 'ZAR', 'AED'
+        ];
+        
+        cachedRates.forEach(rate => {
+          if (majorCurrencies.includes(rate.to)) {
+            rates[rate.to] = rate.rate;
+          }
+        });
+      }
+      
+      console.log(`✅ Captured ${Object.keys(rates).length} exchange rates`);
+      
+      return {
+        capturedAt: new Date(),
+        baseCurrency,
+        rates
+      };
+    } catch (error) {
+      console.error('Error capturing historical rates:', error);
+      
+      // Return minimal snapshot on error
+      return {
+        capturedAt: new Date(),
+        baseCurrency,
+        rates: {}
+      };
+    }
+  }
+
+  /**
+   * NEW: Convert amount using historical rates (if available)
+   * Falls back to current rates if historical rates don't have the target currency
+   */
+  async convertWithHistoricalRates(
+    amount: number,
+    fromCurrency: string,
+    toCurrency: string,
+    historicalRates?: {
+      capturedAt: Date;
+      baseCurrency: string;
+      rates: { [currencyCode: string]: number };
+    }
+  ): Promise<{ convertedAmount: number; usedHistoricalRate: boolean }> {
+    // Same currency, no conversion needed
+    if (fromCurrency === toCurrency) {
+      return { convertedAmount: amount, usedHistoricalRate: false };
+    }
+
+    // Try to use historical rates first
+    if (historicalRates && historicalRates.baseCurrency === fromCurrency) {
+      const historicalRate = historicalRates.rates[toCurrency];
+      
+      if (historicalRate) {
+        // Handle capturedAt as either Date object or string (from database)
+        const capturedDate = typeof historicalRates.capturedAt === 'string' 
+          ? historicalRates.capturedAt 
+          : historicalRates.capturedAt.toISOString();
+        const dateStr = capturedDate.split('T')[0];
+        console.log(`Using historical rate: 1 ${fromCurrency} = ${historicalRate} ${toCurrency} (captured: ${dateStr})`);
+        return {
+          convertedAmount: amount * historicalRate,
+          usedHistoricalRate: true
+        };
+      }
+    }
+
+    // Fallback to current rates
+    console.log(`Historical rate not available, using current rate for ${fromCurrency} → ${toCurrency}`);
+    const currentRate = await this.getExchangeRate(fromCurrency, toCurrency);
+    
+    if (currentRate === null) {
+      console.warn(`Could not convert ${fromCurrency} to ${toCurrency}`);
+      return { convertedAmount: amount, usedHistoricalRate: false };
+    }
+
+    return {
+      convertedAmount: amount * currentRate,
+      usedHistoricalRate: false
+    };
+  }
+
+  /**
+   * NEW: Get exchange rate for a specific date (if available in historical snapshot)
+   * Otherwise returns current rate
+   */
+  getHistoricalRate(
+    fromCurrency: string,
+    toCurrency: string,
+    historicalSnapshot?: {
+      capturedAt: Date;
+      baseCurrency: string;
+      rates: { [currencyCode: string]: number };
+    }
+  ): { rate: number | null; isHistorical: boolean; capturedAt?: Date } {
+    if (fromCurrency === toCurrency) {
+      return { rate: 1, isHistorical: true };
+    }
+
+    // Check if historical snapshot exists and has the rate
+    if (historicalSnapshot && historicalSnapshot.baseCurrency === fromCurrency) {
+      const rate = historicalSnapshot.rates[toCurrency];
+      
+      if (rate) {
+        return {
+          rate,
+          isHistorical: true,
+          capturedAt: historicalSnapshot.capturedAt
+        };
+      }
+    }
+
+    // No historical rate available
+    return { rate: null, isHistorical: false };
+  }
+
+  /**
+   * Save a custom exchange rate manually set by user
+   * This allows users to override API rates if needed
+   */
+  async saveCustomExchangeRate(
+    baseCurrency: string,
+    targetCurrency: string,
+    customRate: number,
+    bookId?: string
+  ): Promise<void> {
+    const key = bookId 
+      ? `custom_rate_${bookId}_${baseCurrency}_${targetCurrency}`
+      : `custom_rate_global_${baseCurrency}_${targetCurrency}`;
+    
+    const customRateData = {
+      baseCurrency,
+      targetCurrency,
+      rate: customRate,
+      setAt: new Date().toISOString(),
+      setBy: 'user',
+      bookId
+    };
+
+    await AsyncStorage.setItem(key, JSON.stringify(customRateData));
+    console.log(`✏️ Saved custom rate: 1 ${baseCurrency} = ${customRate} ${targetCurrency}`);
+  }
+
+  /**
+   * Get book's locked exchange rate (captured at creation or manually updated)
+   */
+  async getBookLockedRate(
+    bookId: string,
+    fromCurrency: string,
+    toCurrency: string
+  ): Promise<number | null> {
+    try {
+      // Import asyncStorageService here to avoid circular dependency
+      const asyncStorageService = require('./asyncStorage').default;
+      const book = await asyncStorageService.getBookById(bookId);
+      
+      console.log(`🔍 Checking locked rate for book ${bookId}:`, {
+        fromCurrency,
+        toCurrency,
+        bookFound: !!book,
+        bookCurrency: book?.currency,
+        bookTargetCurrency: book?.targetCurrency,
+        bookLockedRate: book?.lockedExchangeRate
+      });
+      
+      if (!book) return null;
+      
+      // Check if this book has a locked rate for the target currency
+      if (
+        book.lockedExchangeRate &&
+        book.currency === fromCurrency &&
+        book.targetCurrency === toCurrency
+      ) {
+        console.log(`✅ Using book's locked rate: 1 ${fromCurrency} = ${book.lockedExchangeRate} ${toCurrency}`);
+        return book.lockedExchangeRate;
+      }
+      
+      // Check reverse (if book's target currency is the from, and currency is the to)
+      if (
+        book.lockedExchangeRate &&
+        book.targetCurrency === fromCurrency &&
+        book.currency === toCurrency
+      ) {
+        const invertedRate = 1 / book.lockedExchangeRate;
+        console.log(`✅ Using inverted locked rate: 1 ${fromCurrency} = ${invertedRate} ${toCurrency}`);
+        return invertedRate;
+      }
+      
+      console.log(`ℹ️ No locked rate found for ${fromCurrency} → ${toCurrency}`);
+      return null;
+    } catch (error) {
+      console.error('Error getting book locked rate:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get custom exchange rate if user has set one
+   */
+  async getCustomExchangeRate(
+    baseCurrency: string,
+    targetCurrency: string,
+    bookId?: string
+  ): Promise<{ rate: number; setAt: Date } | null> {
+    try {
+      const key = bookId 
+        ? `custom_rate_${bookId}_${baseCurrency}_${targetCurrency}`
+        : `custom_rate_global_${baseCurrency}_${targetCurrency}`;
+      
+      const data = await AsyncStorage.getItem(key);
+      if (!data) return null;
+
+      const parsed = JSON.parse(data);
+      return {
+        rate: parsed.rate,
+        setAt: new Date(parsed.setAt)
+      };
+    } catch (error) {
+      console.error('Error getting custom rate:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Clear custom exchange rate (revert to API rates)
+   */
+  async clearCustomExchangeRate(
+    baseCurrency: string,
+    targetCurrency: string,
+    bookId?: string
+  ): Promise<void> {
+    const key = bookId 
+      ? `custom_rate_${bookId}_${baseCurrency}_${targetCurrency}`
+      : `custom_rate_global_${baseCurrency}_${targetCurrency}`;
+    
+    await AsyncStorage.removeItem(key);
+    console.log(`🗑️ Cleared custom rate: ${baseCurrency} → ${targetCurrency}`);
+  }
+
+  /**
+   * Validate if a custom rate is reasonable (not too extreme)
+   */
+  validateCustomRate(
+    baseCurrency: string,
+    targetCurrency: string,
+    customRate: number,
+    apiRate: number
+  ): { valid: boolean; warning?: string } {
+    if (customRate <= 0) {
+      return { valid: false, warning: 'Exchange rate must be positive' };
+    }
+
+    // Check if rate is too far from API rate (more than 50% difference)
+    const percentDiff = Math.abs((customRate - apiRate) / apiRate * 100);
+    
+    if (percentDiff > 50) {
+      return { 
+        valid: true, 
+        warning: `⚠️ This rate differs by ${percentDiff.toFixed(1)}% from the current API rate (${apiRate.toFixed(4)}). Please verify this is correct.` 
+      };
+    }
+
+    if (percentDiff > 20) {
+      return { 
+        valid: true, 
+        warning: `This rate differs by ${percentDiff.toFixed(1)}% from the current API rate.` 
+      };
+    }
+
+    return { valid: true };
   }
 }
 
