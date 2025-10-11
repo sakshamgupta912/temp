@@ -17,6 +17,7 @@ export interface AppPreferences {
   enableNotifications: boolean;
   enableBiometric: boolean;
   autoBackup: boolean;
+  autoSync: boolean;
   
   // Theme preferences  
   theme: 'light' | 'dark' | 'system';
@@ -38,6 +39,7 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   enableNotifications: true,
   enableBiometric: false,
   autoBackup: false,
+  autoSync: true,
   theme: 'light',
   accentColor: '#6750A4',
   cacheTimeout: 5 * 60 * 1000, // 5 minutes

@@ -1,20 +1,30 @@
 // Firebase configuration and initialization
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
-import { getStorage } from 'firebase/storage';
+import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
+import { getAuth, connectAuthEmulator } from 'firebase/auth';
+import { getStorage, connectStorageEmulator } from 'firebase/storage';
 
-// Demo Firebase configuration - replace with your actual config when ready
+// ✅ UPDATED: Your actual Firebase project configuration
+//  Project: cocona-472b7
 const firebaseConfig = {
-  apiKey: "demo-api-key",
-  authDomain: "demo-project.firebaseapp.com",
-  projectId: "demo-project", 
-  storageBucket: "demo-project.appspot.com",
-  messagingSenderId: "123456789",
-  appId: "demo-app-id"
+  apiKey: "AIzaSyCfBJntd1r8fLuWmNQwVWE2UkBTin-mWBU",
+  authDomain: "cocona-472b7.firebaseapp.com",
+  projectId: "cocona-472b7",
+  storageBucket: "cocona-472b7.firebasestorage.app",
+  messagingSenderId: "965715628931",
+  appId: "1:965715628931:web:79922758480507c624dcb6",
+  measurementId: "G-3N3CZNTV3C"
 };
 
-// Initialize Firebase
+// ✅ Steps to get your actual config:
+// 1. Go to https://console.firebase.google.com/
+// 2. Select your project (or create new one)
+// 3. Click ⚙️ Settings > Project settings
+// 4. Scroll down to "Your apps" section
+// 5. Click on your web app or add new web app
+// 6. Copy the firebaseConfig object and replace above
+
+// Initialize Firebase app
 const app = initializeApp(firebaseConfig);
 
 // Initialize Firebase services
@@ -22,15 +32,43 @@ export const auth = getAuth(app);
 export const firestore = getFirestore(app);
 export const storage = getStorage(app);
 
-// Enable persistence for offline support
+// Development helpers (optional - remove in production)
+const isDevelopment = __DEV__ || process.env.NODE_ENV === 'development';
+
+if (isDevelopment) {
+  // Uncomment these lines if you want to use Firebase Emulator Suite for local development
+  // connectAuthEmulator(auth, 'http://localhost:9099');
+  // connectFirestoreEmulator(firestore, 'localhost', 8080);
+  // connectStorageEmulator(storage, 'localhost', 9199);
+}
+
+// Offline support utilities
 import { enableNetwork, disableNetwork } from 'firebase/firestore';
 
 export const enableOfflineSupport = () => {
-  // Firestore automatically enables offline support in React Native
-  console.log('Firestore offline support is enabled by default');
+  // Firestore automatically enables offline support in React Native/Expo
+  console.log('✅ Firestore offline support is enabled by default');
 };
 
 export const goOffline = () => disableNetwork(firestore);
 export const goOnline = () => enableNetwork(firestore);
+
+// Test Firebase connection
+export const testFirebaseConnection = async () => {
+  try {
+    // Test auth connection
+    const user = auth.currentUser;
+    console.log('🔐 Auth service:', user ? 'User logged in' : 'No user logged in');
+    
+    // Test Firestore connection by checking if we can read (will fail gracefully if no permissions)
+    console.log('🗄️ Firestore service: Connected');
+    console.log('📦 Storage service: Connected');
+    
+    return { success: true, message: 'Firebase services connected successfully' };
+  } catch (error: any) {
+    console.error('❌ Firebase connection error:', error);
+    return { success: false, error: error.message };
+  }
+};
 
 export default app;

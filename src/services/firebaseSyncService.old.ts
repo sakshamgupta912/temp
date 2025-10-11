@@ -56,7 +56,7 @@ class FirebaseSyncService {
   async initialize(): Promise<void> {
     try {
       // Listen to network state changes
-      NetInfo.addEventListener(state => {
+      NetInfo.addEventListener((state: any) => {
         const wasOnline = this.syncStatus.isOnline;
         this.syncStatus.isOnline = state.isConnected ?? false;
         
@@ -197,7 +197,7 @@ class FirebaseSyncService {
         .collection(COLLECTIONS.BOOKS)
         .get();
 
-      const remoteBooks: Book[] = remoteSnapshot.docs.map(doc => ({
+      const remoteBooks: Book[] = remoteSnapshot.docs.map((doc: any) => ({
         ...doc.data(),
         id: doc.id,
         createdAt: doc.data().createdAt?.toDate(),
@@ -265,7 +265,7 @@ class FirebaseSyncService {
         .collection(COLLECTIONS.ENTRIES)
         .get();
 
-      const remoteEntries: Entry[] = remoteSnapshot.docs.map(doc => ({
+      const remoteEntries: Entry[] = remoteSnapshot.docs.map((doc: any) => ({
         ...doc.data(),
         id: doc.id,
         date: doc.data().date?.toDate(),

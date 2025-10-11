@@ -8,9 +8,9 @@ import {
   signInWithCredential, 
   signOut as firebaseSignOut,
   onAuthStateChanged,
+  User as FirebaseUser 
 } from 'firebase/auth';
 import * as Google from 'expo-auth-session/providers/google';
-import { makeRedirectUri, ResponseType } from 'expo-auth-session';
 
 interface AuthContextType {
   user: User | null;
@@ -41,29 +41,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  console.log('🚀 AuthProvider mounted');
-
-  // Google OAuth configuration - Using NEW OAuth 2.0 Client ID with JavaScript origins
+  // Google OAuth configuration - Update with your client IDs
   const googleConfig = {
-    expoClientId: '965715628931-fjajaci0tm1irupn235njgd1hpjj5j9q.apps.googleusercontent.com',
-    webClientId: '965715628931-fjajaci0tm1irupn235njgd1hpjj5j9q.apps.googleusercontent.com',
-    iosClientId: '965715628931-fjajaci0tm1irupn235njgd1hpjj5j9q.apps.googleusercontent.com',
-    androidClientId: '965715628931-fjajaci0tm1irupn235njgd1hpjj5j9q.apps.googleusercontent.com',
+    expoClientId: 'YOUR_EXPO_CLIENT_ID.apps.googleusercontent.com',
+    webClientId: 'YOUR_WEB_CLIENT_ID.apps.googleusercontent.com',
+    iosClientId: 'YOUR_IOS_CLIENT_ID.apps.googleusercontent.com',
+    androidClientId: 'YOUR_ANDROID_CLIENT_ID.apps.googleusercontent.com',
   };
-
-  // Google auth request hook - must be at component level
-  // Use web browser for authentication with proper deep linking
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    clientId: googleConfig.webClientId,
-    scopes: ['profile', 'email'],
-    responseType: ResponseType.IdToken,
-  });
-
-  console.log('🔧 Google auth request state:', { 
-    hasRequest: !!request, 
-    responseType: response?.type || 'none',
-    responseExists: !!response 
-  });
 
   useEffect(() => {
     // Initialize auth state
@@ -90,47 +74,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
     return unsubscribe;
   }, []);
-
-  // Handle Google authentication response
-  useEffect(() => {
-    if (response) {
-      console.log('🔍 Google auth response received:', response.type);
-      console.log('🔍 Full response object:', JSON.stringify(response, null, 2));
-      
-      if (response.type === 'success') {
-        console.log('✅ Google auth success, processing...');
-        console.log('🔍 Response params:', JSON.stringify(response.params, null, 2));
-        
-        const { id_token, access_token } = response.params;
-        
-        if (id_token) {
-          console.log('🔑 ID token received, creating Firebase credential...');
-          try {
-            // Create Firebase credential and sign in
-            const googleCredential = GoogleAuthProvider.credential(id_token);
-            signInWithCredential(auth, googleCredential)
-              .then((userCredential) => {
-                console.log('✅ Firebase sign-in successful:', userCredential.user.email);
-                // The Firebase auth state listener will handle updating the user state
-              })
-              .catch((error) => {
-                console.error('❌ Firebase sign-in error:', error.message);
-                console.error('❌ Full Firebase error:', error);
-              });
-          } catch (credentialError) {
-            console.error('❌ Error creating Google credential:', credentialError);
-          }
-        } else {
-          console.error('❌ No ID token in response params');
-          console.error('Available params:', Object.keys(response.params || {}));
-        }
-      } else if (response.type === 'error') {
-        console.error('❌ Google auth error:', response.error);
-      } else if (response.type === 'cancel') {
-        console.log('📱 User cancelled Google authentication');
-      }
-    }
-  }, [response]);
 
   const loadUserFromStorage = async () => {
     try {
@@ -160,23 +103,40 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         };
       }
 
+      // Create Google auth request
+      const [request, response, promptAsync] = Google.useAuthRequest({
+        clientId: googleConfig.webClientId,
+        scopes: ['profile', 'email'],
+      });
+
       if (!request) {
         throw new Error('Failed to create Google auth request');
       }
 
-      // Prompt for authentication - response will be handled by useEffect
+      // Prompt for authentication
       console.log('🔐 Starting Google Sign-In...');
       const result = await promptAsync();
 
-      if (result.type === 'cancel') {
+      if (result.type === 'success') {
+        const { id_token } = result.params;
+        
+        if (!id_token) {
+          throw new Error('No ID token received from Google');
+        }
+
+        // Create Firebase credential and sign in
+        const googleCredential = GoogleAuthProvider.credential(id_token);
+        const userCredential = await signInWithCredential(auth, googleCredential);
+        
+        console.log('✅ Google Sign-In successful:', userCredential.user.email);
+        return { success: true };
+        
+      } else if (result.type === 'cancel') {
         console.log('📱 User cancelled Google Sign-In');
         return { success: false, error: 'User cancelled sign-in' };
-      } else if (result.type === 'error') {
-        throw new Error(result.error?.message || 'Google Sign-In failed');
+      } else {
+        throw new Error('Google Sign-In failed');
       }
-
-      // Success will be handled by the useEffect that listens to response changes
-      return { success: true };
 
     } catch (error: any) {
       console.error('❌ Google Sign-In error:', error);

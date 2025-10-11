@@ -23,28 +23,39 @@ import { useAuth } from '../contexts/AuthContext';
 import { spacing, borderRadius, elevation } from '../theme/materialTheme';
 
 const LoginScreen: React.FC = () => {
-  const { signInWithGoogle, signInAsDemo, error, isLoading } = useAuth();
+  const { signInWithGoogle, isLoading } = useAuth();
   const [isDemoLoading, setIsDemoLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const theme = useTheme();
   const { width, height } = Dimensions.get('window');
 
   const handleGoogleSignIn = async () => {
+    setError(null);
     try {
-      await signInWithGoogle();
+      const result = await signInWithGoogle();
+      if (!result.success) {
+        setError(result.error || 'Google Sign-In failed');
+        Alert.alert('Info', result.error || 'Google Sign-In is not yet configured. Please complete Firebase setup first.');
+      }
     } catch (err) {
+      setError('Failed to sign in with Google');
       Alert.alert('Error', 'Failed to sign in with Google');
     }
   };
 
   const handleDemoSignIn = async () => {
     setIsDemoLoading(true);
+    setError(null);
     try {
-      // Sign in as demo user using the context method
-      await signInAsDemo();
-      console.log('Demo user signed in successfully');
+      // TODO: Implement demo user sign-in when Firebase services are ready
+      Alert.alert(
+        'Demo Sign-In', 
+        'Demo user sign-in will be available once Firebase services are fully configured.',
+        [{ text: 'OK' }]
+      );
     } catch (err) {
       console.error('Demo sign in error:', err);
-      Alert.alert('Error', 'Failed to sign in as demo user');
+      setError('Failed to sign in as demo user');
     } finally {
       setIsDemoLoading(false);
     }
@@ -113,28 +124,46 @@ const LoginScreen: React.FC = () => {
           </Surface>
 
           {/* Google Sign In Button */}
-          <Surface style={[styles.buttonContainer, { backgroundColor: theme.colors.surfaceVariant }]} elevation={1}>
-            <MaterialIcons name="login" size={24} color="#4285F4" style={styles.buttonIcon} />
+          <Surface style={[styles.buttonContainer, { backgroundColor: theme.colors.surface }]} elevation={2}>
+            <View style={styles.googleLogoContainer}>
+              <Image 
+                source={{ uri: 'https://developers.google.com/identity/images/g-logo.png' }}
+                style={styles.googleLogo}
+                resizeMode="contain"
+              />
+            </View>
             <View style={styles.buttonContent}>
-              <Text variant="titleMedium" style={[styles.buttonTitle, { color: theme.colors.onSurfaceVariant }]}>
+              <Text variant="titleMedium" style={[styles.buttonTitle, { color: theme.colors.onSurface }]}>
                 Google Account
               </Text>
               <Text variant="bodySmall" style={[styles.buttonSubtitle, { color: theme.colors.onSurfaceVariant }]}>
-                Sync across devices
+                Sync across devices • Cloud backup
               </Text>
             </View>
             <Button
-              mode="outlined"
+              mode="contained"
               onPress={handleGoogleSignIn}
               loading={isLoading && !isDemoLoading}
               disabled={isLoading || isDemoLoading}
-              style={[styles.actionButton, { borderColor: theme.colors.outline }]}
-              labelStyle={{ color: theme.colors.primary }}
+              style={[styles.actionButton, { backgroundColor: '#4285F4' }]}
+              labelStyle={{ color: '#FFFFFF', fontWeight: '600' }}
               contentStyle={styles.buttonContentStyle}
+              icon={isLoading && !isDemoLoading ? undefined : () => 
+                <MaterialIcons name="login" size={18} color="#FFFFFF" />
+              }
             >
               {isLoading && !isDemoLoading ? 'Signing In...' : 'Sign In'}
             </Button>
           </Surface>
+
+          {/* Divider */}
+          <View style={styles.dividerContainer}>
+            <View style={[styles.dividerLine, { backgroundColor: theme.colors.outline }]} />
+            <Text variant="bodySmall" style={[styles.dividerText, { color: theme.colors.onSurfaceVariant }]}>
+              or
+            </Text>
+            <View style={[styles.dividerLine, { backgroundColor: theme.colors.outline }]} />
+          </View>
           
         </View>
 
@@ -249,6 +278,17 @@ const styles = StyleSheet.create({
   buttonIcon: {
     marginRight: spacing.md,
   },
+  googleLogoContainer: {
+    width: 24,
+    height: 24,
+    marginRight: spacing.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  googleLogo: {
+    width: 20,
+    height: 20,
+  },
   buttonContent: {
     flex: 1,
     marginRight: spacing.md,
@@ -259,6 +299,20 @@ const styles = StyleSheet.create({
   },
   buttonSubtitle: {
     opacity: 0.7,
+  },
+  dividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+  },
+  dividerText: {
+    marginHorizontal: spacing.md,
+    fontWeight: '500',
   },
   actionButton: {
     borderRadius: borderRadius.lg,
