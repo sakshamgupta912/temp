@@ -8,7 +8,7 @@ node_modules/
 dist/
 web-build/
 expo-env.d.ts
-
+config/google-oauth-credentials.json:8
 # Native
 .kotlin/
 *.orig.*
