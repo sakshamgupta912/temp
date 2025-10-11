@@ -56,13 +56,36 @@ export const goOnline = () => enableNetwork(firestore);
 // Test Firebase connection
 export const testFirebaseConnection = async () => {
   try {
+    console.log('🧪 Testing Firebase connection...');
+    
     // Test auth connection
     const user = auth.currentUser;
-    console.log('🔐 Auth service:', user ? 'User logged in' : 'No user logged in');
+    console.log('🔐 Auth service:', user ? `User logged in: ${user.email}` : 'No user logged in');
     
-    // Test Firestore connection by checking if we can read (will fail gracefully if no permissions)
-    console.log('🗄️ Firestore service: Connected');
-    console.log('📦 Storage service: Connected');
+    // Test Firestore connection with a simple read
+    console.log('🗄️ Testing Firestore connection...');
+    
+    if (user) {
+      try {
+        // Try to read user document
+        const { doc, getDoc } = await import('firebase/firestore');
+        const testDocRef = doc(firestore, 'users', user.uid);
+        await getDoc(testDocRef);
+        console.log('✅ Firestore connection successful');
+      } catch (firestoreError: any) {
+        console.error('❌ Firestore connection failed:', firestoreError);
+        if (firestoreError.code === 'permission-denied') {
+          console.log('🔒 Firestore security rules may need to be updated');
+        } else if (firestoreError.code === 'unavailable') {
+          console.log('🌐 Firestore service unavailable - check internet connection');
+        }
+        throw firestoreError;
+      }
+    } else {
+      console.log('⚠️ Cannot test Firestore without authenticated user');
+    }
+    
+    console.log('📦 Storage service: Available');
     
     return { success: true, message: 'Firebase services connected successfully' };
   } catch (error: any) {

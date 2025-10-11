@@ -10,6 +10,21 @@ const STORAGE_KEYS = {
 };
 
 class AsyncStorageService {
+  // Callback for triggering sync after data changes
+  private onDataChangedCallback: (() => void) | null = null;
+
+  // Set the callback for data changes (called from AuthContext)
+  setOnDataChanged(callback: (() => void) | null) {
+    this.onDataChangedCallback = callback;
+  }
+
+  // Trigger the callback if it exists
+  private notifyDataChanged() {
+    if (this.onDataChangedCallback) {
+      this.onDataChangedCallback();
+    }
+  }
+
   // Utility function for better error handling
   private handleError(operation: string, error: any): never {
     console.error(`AsyncStorage Error - ${operation}:`, error);
@@ -63,6 +78,8 @@ class AsyncStorageService {
         id: `default_${name.toLowerCase().replace(/\s+/g, '_')}`,
         name,
         userId: 'default',
+        version: 1,
+        lastModifiedBy: 'default',
         createdAt: new Date()
       }));
 
@@ -74,7 +91,7 @@ class AsyncStorageService {
   }
 
   // Book operations
-  async createBook(book: Omit<Book, 'id' | 'createdAt' | 'updatedAt'>): Promise<Book> {
+  async createBook(book: Omit<Book, 'id' | 'createdAt' | 'updatedAt' | 'version'>): Promise<Book> {
     try {
       console.log('AsyncStorage: Creating book:', book.name);
       
@@ -93,6 +110,9 @@ class AsyncStorageService {
         id: `book_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         ...book,
         currencyHistory: book.currencyHistory || [], // Initialize currency history
+        version: 1, // Git-style: New items start at version 1
+        lastModifiedBy: book.userId, // Track who created it
+        lastSyncedVersion: undefined, // Not yet synced to cloud
         createdAt: new Date(),
         updatedAt: new Date()
       };
@@ -117,6 +137,10 @@ class AsyncStorageService {
       }
       
       console.log('AsyncStorage: Book created successfully:', newBook.name);
+      
+      // Trigger auto-sync
+      this.notifyDataChanged();
+      
       return newBook;
     } catch (error) {
       console.error('AsyncStorage: Error creating book:', error);
@@ -181,7 +205,8 @@ class AsyncStorageService {
             return [];
           }
 
-          const userBooks = allBooks.filter(book => book.userId === userId);
+          // Filter out deleted books (tombstone markers) and get user's books
+          const userBooks = allBooks.filter(book => book.userId === userId && !book.deleted);
           console.log('AsyncStorage: Retrieved books for user:', userBooks.length);
           return userBooks.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         },
@@ -189,6 +214,57 @@ class AsyncStorageService {
       );
     } catch (error) {
       console.error('AsyncStorage: Error getting books:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get ALL books for a user, including deleted ones (tombstones)
+   * Used for syncing deletions to Firebase
+   */
+  async getAllBooks(userId: string): Promise<Book[]> {
+    try {
+      if (!userId) {
+        console.error('AsyncStorage: No userId provided for getAllBooks');
+        return [];
+      }
+
+      console.log('AsyncStorage: Fetching ALL books (including deleted) for user:', userId);
+      
+      let stored: string | null;
+      try {
+        stored = await AsyncStorage.getItem(STORAGE_KEYS.BOOKS);
+      } catch (storageError) {
+        console.error('AsyncStorage: Failed to read books from storage:', storageError);
+        return [];
+      }
+      
+      if (!stored) {
+        console.log('AsyncStorage: No books found, returning empty array');
+        return [];
+      }
+
+      let allBooks: Book[];
+      try {
+        const parsed = JSON.parse(stored);
+        allBooks = parsed.map((book: any) => ({
+          ...book,
+          createdAt: new Date(book.createdAt),
+          updatedAt: new Date(book.updatedAt),
+          deletedAt: book.deletedAt ? new Date(book.deletedAt) : undefined
+        }));
+      } catch (parseError) {
+        console.error('AsyncStorage: Failed to parse books data:', parseError);
+        return [];
+      }
+
+      // Return all books for this user, including deleted ones (tombstones)
+      const userBooks = allBooks.filter(book => book.userId === userId);
+      console.log('AsyncStorage: Retrieved ALL books for user (including deleted):', userBooks.length, 
+                  `(${userBooks.filter(b => b.deleted).length} deleted)`);
+      return userBooks.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    } catch (error) {
+      console.error('AsyncStorage: Error getting all books:', error);
       return [];
     }
   }
@@ -203,9 +279,12 @@ class AsyncStorageService {
       
       if (bookIndex >= 0) {
         const userId = books[bookIndex].userId;
+        const currentVersion = books[bookIndex].version || 1;
         books[bookIndex] = {
           ...books[bookIndex],
           ...updates,
+          version: currentVersion + 1, // Git-style: Increment version on update
+          lastModifiedBy: userId, // Track who modified it
           updatedAt: new Date()
         };
         await AsyncStorage.setItem(STORAGE_KEYS.BOOKS, JSON.stringify(books));
@@ -220,6 +299,9 @@ class AsyncStorageService {
           console.log(`Locked rate changed, invalidating entries cache for bookId: ${bookId}`);
           await dataCacheService.invalidatePattern(`entries:bookId:${bookId}`);
         }
+        
+        // Trigger auto-sync
+        this.notifyDataChanged();
       }
     } catch (error) {
       console.error('Error updating book:', error);
@@ -267,14 +349,26 @@ class AsyncStorageService {
       }
       
       const userId = bookToDelete.userId;
-      const filteredBooks = books.filter(book => book.id !== bookId);
       
-      // Save filtered books back to storage
+      // Mark book as deleted (tombstone marker) instead of removing it
+      // This allows other devices to know it was deleted
+      const updatedBooks = books.map(book => 
+        book.id === bookId 
+          ? { 
+              ...book, 
+              deleted: true, 
+              deletedAt: new Date(),
+              updatedAt: new Date() 
+            } 
+          : book
+      );
+      
+      // Save updated books back to storage
       try {
-        await AsyncStorage.setItem(STORAGE_KEYS.BOOKS, JSON.stringify(filteredBooks));
-        console.log(`AsyncStorage: Successfully saved ${filteredBooks.length} books back to storage`);
+        await AsyncStorage.setItem(STORAGE_KEYS.BOOKS, JSON.stringify(updatedBooks));
+        console.log(`AsyncStorage: Successfully marked book as deleted (tombstone): ${bookId}`);
       } catch (saveError) {
-        console.error('AsyncStorage: Failed to save filtered books:', saveError);
+        console.error('AsyncStorage: Failed to save updated books:', saveError);
         throw new Error('Failed to save updated books to storage');
       }
       
@@ -292,6 +386,9 @@ class AsyncStorageService {
       }
       
       console.log('AsyncStorage: Book deleted successfully:', bookId);
+      
+      // Trigger auto-sync
+      this.notifyDataChanged();
     } catch (error) {
       console.error('AsyncStorage: Error deleting book:', error);
       throw new Error(`Failed to delete book: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -299,7 +396,7 @@ class AsyncStorageService {
   }
 
   // Entry operations
-  async createEntry(entry: Omit<Entry, 'id' | 'createdAt' | 'updatedAt'>): Promise<Entry> {
+  async createEntry(entry: Omit<Entry, 'id' | 'createdAt' | 'updatedAt' | 'version'>): Promise<Entry> {
     try {
       console.log('AsyncStorage: Creating entry for bookId:', entry.bookId);
       
@@ -326,6 +423,9 @@ class AsyncStorageService {
         ...entry,
         historicalRates: entry.historicalRates, // Preserve historical rates if provided
         conversionHistory: entry.conversionHistory || [], // Initialize conversion history
+        version: 1, // Git-style: New items start at version 1
+        lastModifiedBy: entry.userId, // Track who created it
+        lastSyncedVersion: undefined, // Not yet synced to cloud
         createdAt: new Date(),
         updatedAt: new Date()
       };
@@ -351,6 +451,10 @@ class AsyncStorageService {
       }
       
       console.log('AsyncStorage: Entry created successfully with id:', newEntry.id);
+      
+      // Trigger auto-sync
+      this.notifyDataChanged();
+      
       return newEntry;
     } catch (error) {
       console.error('AsyncStorage: Error creating entry:', error);
@@ -398,7 +502,8 @@ class AsyncStorageService {
             return [];
           }
 
-          let bookEntries = allEntries.filter(entry => entry.bookId === bookId);
+          // Filter out deleted entries (tombstone markers) and get book's entries
+          let bookEntries = allEntries.filter(entry => entry.bookId === bookId && !entry.deleted);
           bookEntries.sort((a, b) => b.date.getTime() - a.date.getTime());
           
           if (limit && limit > 0) {
@@ -416,6 +521,58 @@ class AsyncStorageService {
     }
   }
 
+  /**
+   * Get ALL entries for a user (across all books), including deleted ones (tombstones)
+   * Used for syncing deletions to Firebase
+   */
+  async getAllEntries(userId: string): Promise<Entry[]> {
+    try {
+      if (!userId) {
+        console.error('AsyncStorage: No userId provided for getAllEntries');
+        return [];
+      }
+
+      console.log('AsyncStorage: Fetching ALL entries (including deleted) for user:', userId);
+      
+      let stored: string | null;
+      try {
+        stored = await AsyncStorage.getItem(STORAGE_KEYS.ENTRIES);
+      } catch (storageError) {
+        console.error('AsyncStorage: Failed to read entries from storage:', storageError);
+        return [];
+      }
+      
+      if (!stored) {
+        console.log('AsyncStorage: No entries found, returning empty array');
+        return [];
+      }
+
+      let allEntries: Entry[];
+      try {
+        const parsed = JSON.parse(stored);
+        allEntries = parsed.map((entry: any) => ({
+          ...entry,
+          date: new Date(entry.date),
+          createdAt: new Date(entry.createdAt),
+          updatedAt: new Date(entry.updatedAt),
+          deletedAt: entry.deletedAt ? new Date(entry.deletedAt) : undefined
+        }));
+      } catch (parseError) {
+        console.error('AsyncStorage: Failed to parse entries data:', parseError);
+        return [];
+      }
+
+      // Return all entries for this user, including deleted ones (tombstones)
+      const userEntries = allEntries.filter(entry => entry.userId === userId);
+      console.log('AsyncStorage: Retrieved ALL entries for user (including deleted):', userEntries.length,
+                  `(${userEntries.filter(e => e.deleted).length} deleted)`);
+      return userEntries.sort((a, b) => b.date.getTime() - a.date.getTime());
+    } catch (error) {
+      console.error('AsyncStorage: Error getting all entries:', error);
+      return [];
+    }
+  }
+
   async updateEntry(entryId: string, updates: Partial<Omit<Entry, 'id' | 'createdAt' | 'updatedAt'>>): Promise<void> {
     try {
       const stored = await AsyncStorage.getItem(STORAGE_KEYS.ENTRIES);
@@ -426,9 +583,13 @@ class AsyncStorageService {
       
       if (entryIndex >= 0) {
         const bookId = entries[entryIndex].bookId;
+        const userId = entries[entryIndex].userId;
+        const currentVersion = entries[entryIndex].version || 1;
         entries[entryIndex] = {
           ...entries[entryIndex],
           ...updates,
+          version: currentVersion + 1, // Git-style: Increment version on update
+          lastModifiedBy: userId, // Track who modified it
           updatedAt: new Date()
         };
         await AsyncStorage.setItem(STORAGE_KEYS.ENTRIES, JSON.stringify(entries));
@@ -436,6 +597,9 @@ class AsyncStorageService {
         // Invalidate entries cache for this book
         console.log(`Invalidating cache for updated entry with bookId: ${bookId}`);
         await dataCacheService.invalidatePattern(`entries:bookId:${bookId}`);
+        
+        // Trigger auto-sync
+        this.notifyDataChanged();
       }
     } catch (error) {
       console.error('Error updating entry:', error);
@@ -521,14 +685,25 @@ class AsyncStorageService {
       }
       
       const bookId = entryToDelete.bookId;
-      const filteredEntries = entries.filter(entry => entry.id !== entryId);
       
-      // Save filtered entries back to storage
+      // Mark entry as deleted (tombstone marker) instead of removing it
+      const updatedEntries = entries.map(entry => 
+        entry.id === entryId 
+          ? { 
+              ...entry, 
+              deleted: true, 
+              deletedAt: new Date(),
+              updatedAt: new Date() 
+            } 
+          : entry
+      );
+      
+      // Save updated entries back to storage
       try {
-        await AsyncStorage.setItem(STORAGE_KEYS.ENTRIES, JSON.stringify(filteredEntries));
-        console.log(`AsyncStorage: Successfully saved ${filteredEntries.length} entries back to storage`);
+        await AsyncStorage.setItem(STORAGE_KEYS.ENTRIES, JSON.stringify(updatedEntries));
+        console.log(`AsyncStorage: Successfully marked entry as deleted (tombstone): ${entryId}`);
       } catch (saveError) {
-        console.error('AsyncStorage: Failed to save filtered entries:', saveError);
+        console.error('AsyncStorage: Failed to save updated entries:', saveError);
         throw new Error('Failed to save updated entries to storage');
       }
       
@@ -545,6 +720,9 @@ class AsyncStorageService {
       }
       
       console.log('AsyncStorage: Entry deleted successfully:', entryId);
+      
+      // Trigger auto-sync
+      this.notifyDataChanged();
     } catch (error) {
       console.error('AsyncStorage: Error deleting entry:', error);
       throw new Error(`Failed to delete entry: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -576,12 +754,23 @@ class AsyncStorageService {
       }
 
       const entriesToDelete = entries.filter(entry => entry.bookId === bookId);
-      const filteredEntries = entries.filter(entry => entry.bookId !== bookId);
       
-      // Save filtered entries back to storage
+      // Mark all entries for this book as deleted (tombstone markers)
+      const updatedEntries = entries.map(entry => 
+        entry.bookId === bookId 
+          ? { 
+              ...entry, 
+              deleted: true, 
+              deletedAt: new Date(),
+              updatedAt: new Date() 
+            } 
+          : entry
+      );
+      
+      // Save updated entries back to storage
       try {
-        await AsyncStorage.setItem(STORAGE_KEYS.ENTRIES, JSON.stringify(filteredEntries));
-        console.log(`AsyncStorage: Successfully saved ${filteredEntries.length} entries after removing ${entriesToDelete.length} entries`);
+        await AsyncStorage.setItem(STORAGE_KEYS.ENTRIES, JSON.stringify(updatedEntries));
+        console.log(`AsyncStorage: Successfully marked ${entriesToDelete.length} entries as deleted (tombstones) for book: ${bookId}`);
       } catch (saveError) {
         console.error('AsyncStorage: Failed to save entries after book deletion:', saveError);
         throw new Error('Failed to save entries after book deletion');
@@ -636,14 +825,17 @@ class AsyncStorageService {
               color: '#9E9E9E',
               icon: 'category',
               userId: 'default',
+              version: 1,
+              lastModifiedBy: 'default',
               createdAt: new Date()
             };
             allCategories.push(othersCategory);
             await AsyncStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(allCategories));
           }
 
+          // Filter out deleted categories (tombstone markers) and get user's categories
           const userCategories = allCategories.filter(category => 
-            category.userId === userId || category.userId === 'default'
+            (category.userId === userId || category.userId === 'default') && !category.deleted
           );
 
           console.log('AsyncStorage: Retrieved categories:', userCategories.length);
@@ -657,11 +849,47 @@ class AsyncStorageService {
     }
   }
 
-  async createCategory(category: Omit<Category, 'id' | 'createdAt'>): Promise<Category> {
+  /**
+   * Get ALL categories for a user, including deleted ones (tombstones)
+   * Used for syncing deletions to Firebase
+   */
+  async getAllCategories(userId: string): Promise<Category[]> {
+    try {
+      console.log('AsyncStorage: Fetching ALL categories (including deleted) for user:', userId);
+      const stored = await AsyncStorage.getItem(STORAGE_KEYS.CATEGORIES);
+      
+      let allCategories: Category[] = [];
+      
+      if (stored) {
+        allCategories = JSON.parse(stored).map((category: any) => ({
+          ...category,
+          createdAt: new Date(category.createdAt),
+          deletedAt: category.deletedAt ? new Date(category.deletedAt) : undefined
+        }));
+      }
+
+      // Return all categories for this user (including deleted), plus default categories
+      const userCategories = allCategories.filter(category => 
+        category.userId === userId || category.userId === 'default'
+      );
+
+      console.log('AsyncStorage: Retrieved ALL categories for user (including deleted):', userCategories.length,
+                  `(${userCategories.filter(c => c.deleted).length} deleted)`);
+      return userCategories;
+    } catch (error) {
+      console.error('Error getting all categories:', error);
+      return [];
+    }
+  }
+
+  async createCategory(category: Omit<Category, 'id' | 'createdAt' | 'version'>): Promise<Category> {
     try {
       const newCategory: Category = {
         id: `category_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         ...category,
+        version: 1, // Git-style: New items start at version 1
+        lastModifiedBy: category.lastModifiedBy || category.userId, // Track who created it
+        lastSyncedVersion: category.lastSyncedVersion, // Preserve if provided
         createdAt: new Date()
       };
 
@@ -673,6 +901,9 @@ class AsyncStorageService {
       
       // Invalidate categories cache for this user
       await dataCacheService.invalidatePattern(`categories:userId:${category.userId}`);
+      
+      // Trigger auto-sync
+      this.notifyDataChanged();
       
       return newCategory;
     } catch (error) {
@@ -696,15 +927,22 @@ class AsyncStorageService {
       }
 
       // Update the category
+      const currentVersion = allCategories[categoryIndex].version || 1;
+      const userId = allCategories[categoryIndex].userId;
       allCategories[categoryIndex] = {
         ...allCategories[categoryIndex],
-        ...updates
+        ...updates,
+        version: currentVersion + 1, // Git-style: Increment version on update
+        lastModifiedBy: userId // Track who modified it
       };
 
       await AsyncStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(allCategories));
       
       // Invalidate categories cache for this user
       await dataCacheService.invalidatePattern(`categories:userId:${allCategories[categoryIndex].userId}`);
+      
+      // Trigger auto-sync
+      this.notifyDataChanged();
       
       console.log('Category updated successfully:', categoryId);
     } catch (error) {
@@ -732,12 +970,24 @@ class AsyncStorageService {
         throw new Error('Cannot delete the "Others" category as it is a mandatory default category');
       }
 
-      // Remove the category
-      const updatedCategories = allCategories.filter(cat => cat.id !== categoryId);
+      // Mark category as deleted (tombstone marker) instead of removing it
+      const updatedCategories = allCategories.map(cat => 
+        cat.id === categoryId 
+          ? { 
+              ...cat, 
+              deleted: true, 
+              deletedAt: new Date()
+            } 
+          : cat
+      );
       await AsyncStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(updatedCategories));
+      console.log(`AsyncStorage: Successfully marked category as deleted (tombstone): ${categoryId}`);
       
       // Invalidate categories cache for this user
       await dataCacheService.invalidatePattern(`categories:userId:${categoryToDelete.userId}`);
+      
+      // Trigger auto-sync
+      this.notifyDataChanged();
       
       console.log('Category deleted successfully:', categoryId);
     } catch (error) {
@@ -784,7 +1034,8 @@ class AsyncStorageService {
         if (!exists) {
           const category = await this.createCategory({
             ...categoryData,
-            userId: 'default' // Use 'default' as userId so it's shared across all users
+            userId: 'default', // Use 'default' as userId so it's shared across all users
+            lastModifiedBy: 'default'
           });
           createdCategories.push(category);
         } else {

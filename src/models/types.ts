@@ -31,6 +31,15 @@ export interface Book {
   // Track currency changes over time (for audit trail)
   currencyHistory?: BookCurrencyHistory[];
   
+  // Soft delete support for multi-device sync
+  deleted?: boolean; // Tombstone marker: true if deleted, undefined/false if active
+  deletedAt?: Date; // When the item was deleted
+  
+  // Git-style version control (like Git commits)
+  version: number; // Increments on each modification (starts at 1)
+  lastModifiedBy?: string; // User ID who last modified this item
+  lastSyncedVersion?: number; // Version when last synced from cloud (base for 3-way merge)
+  
   createdAt: Date;
   updatedAt: Date;
   userId: string;
@@ -79,6 +88,15 @@ export interface Entry {
   // Conversion history (if book currency was changed after entry creation)
   conversionHistory?: ConversionHistoryEntry[];
   
+  // Soft delete support for multi-device sync
+  deleted?: boolean; // Tombstone marker: true if deleted, undefined/false if active
+  deletedAt?: Date; // When the item was deleted
+  
+  // Git-style version control
+  version: number; // Increments on each modification
+  lastModifiedBy?: string; // User ID who last modified
+  lastSyncedVersion?: number; // Base version for 3-way merge
+  
   createdAt: Date;
   updatedAt: Date;
   userId: string;
@@ -123,6 +141,16 @@ export interface Category {
   color?: string;
   icon?: string;
   userId: string;
+  
+  // Soft delete support for multi-device sync
+  deleted?: boolean; // Tombstone marker: true if deleted, undefined/false if active
+  deletedAt?: Date; // When the item was deleted
+  
+  // Git-style version control
+  version: number; // Increments on each modification
+  lastModifiedBy?: string; // User ID who last modified
+  lastSyncedVersion?: number; // Base version for 3-way merge
+  
   createdAt: Date;
 }
 

@@ -40,6 +40,7 @@ import {
   formatPercentage,
   FinancialInsights
 } from '../utils/chartUtils';
+import { SyncStatusBanner } from '../components/SyncStatusBanner';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -320,6 +321,9 @@ const AnalyticsScreen: React.FC = () => {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      {/* Sync Status Banner */}
+      <SyncStatusBanner />
+      
       <ScrollView
         style={styles.scrollView}
         refreshControl={

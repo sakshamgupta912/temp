@@ -22,6 +22,8 @@ import PreferencesScreen from '../screens/PreferencesScreen';
 import DataExportScreen from '../screens/DataExportScreen';
 import AboutScreen from '../screens/AboutScreen';
 import LoginScreen from '../screens/LoginScreen';
+import SignUpScreen from '../screens/SignUpScreen';
+import OnboardingScreen from '../screens/OnboardingScreen';
 import DebugScreen from '../screens/DebugScreen';
 
 import { useAuth } from '../contexts/AuthContext';
@@ -29,6 +31,8 @@ import { useAuth } from '../contexts/AuthContext';
 // Stack Navigator Types
 export type RootStackParamList = {
   Login: undefined;
+  SignUp: undefined;
+  Onboarding: undefined;
   Main: undefined;
   AddBook: undefined;
   EditBook: { bookId: string };
@@ -157,7 +161,7 @@ const LoadingScreen: React.FC = () => {
 };
 
 const Navigation: React.FC = () => {
-  const { isAuthenticated, isLoading, user } = useAuth();
+  const { isAuthenticated, isLoading, user, needsOnboarding } = useAuth();
   const theme = useTheme();
 
   if (isLoading) {
@@ -186,11 +190,26 @@ const Navigation: React.FC = () => {
         }}
       >
         {!isAuthenticated ? (
-          <Stack.Screen 
-            name="Login" 
-            component={LoginScreen}
-            options={{ headerShown: false }}
-          />
+          <>
+            <Stack.Screen 
+              name="Login" 
+              component={LoginScreen}
+              options={{ headerShown: false }}
+            />
+            <Stack.Screen 
+              name="SignUp" 
+              component={SignUpScreen}
+              options={{ headerShown: false }}
+            />
+          </>
+        ) : needsOnboarding ? (
+          <>
+            <Stack.Screen 
+              name="Onboarding" 
+              component={OnboardingScreen}
+              options={{ headerShown: false }}
+            />
+          </>
         ) : (
           <>
             <Stack.Screen 

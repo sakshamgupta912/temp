@@ -845,6 +845,70 @@ class DatabaseService {
     };
   }
 
+  // Migration: Assign existing data to a user
+  async assignExistingDataToUser(userId: string): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      console.log('🔄 Starting data migration for user:', userId);
+      
+      // Check if migration is needed by checking for records without userId
+      const orphanedBooks = await this.db.getAllAsync<any>(
+        'SELECT id FROM books WHERE userId IS NULL OR userId = ""'
+      );
+      
+      const orphanedEntries = await this.db.getAllAsync<any>(
+        'SELECT id FROM entries WHERE userId IS NULL OR userId = ""'
+      );
+      
+      const orphanedCategories = await this.db.getAllAsync<any>(
+        'SELECT id FROM categories WHERE userId IS NULL OR userId = "" AND userId != "default"'
+      );
+
+      if (orphanedBooks.length === 0 && orphanedEntries.length === 0 && orphanedCategories.length === 0) {
+        console.log('✅ No orphaned data found, migration not needed');
+        return;
+      }
+
+      console.log('📊 Found orphaned data:');
+      console.log('  Books:', orphanedBooks.length);
+      console.log('  Entries:', orphanedEntries.length);
+      console.log('  Categories:', orphanedCategories.length);
+
+      // Update books
+      if (orphanedBooks.length > 0) {
+        await this.db.runAsync(
+          'UPDATE books SET userId = ? WHERE userId IS NULL OR userId = ""',
+          [userId]
+        );
+        console.log('✅ Updated', orphanedBooks.length, 'books');
+      }
+
+      // Update entries
+      if (orphanedEntries.length > 0) {
+        await this.db.runAsync(
+          'UPDATE entries SET userId = ? WHERE userId IS NULL OR userId = ""',
+          [userId]
+        );
+        console.log('✅ Updated', orphanedEntries.length, 'entries');
+      }
+
+      // Update categories (but not default ones)
+      if (orphanedCategories.length > 0) {
+        await this.db.runAsync(
+          'UPDATE categories SET userId = ? WHERE (userId IS NULL OR userId = "") AND userId != "default"',
+          [userId]
+        );
+        console.log('✅ Updated', orphanedCategories.length, 'categories');
+      }
+
+      console.log('✅ Data migration completed successfully');
+    } catch (error) {
+      console.error('❌ Error during data migration:', error);
+      throw error;
+    }
+  }
+
   // Clean up
   async closeDatabase(): Promise<void> {
     if (this.db) {

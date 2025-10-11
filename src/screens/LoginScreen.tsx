@@ -13,6 +13,7 @@ import {
   Card, 
   Title, 
   Paragraph, 
+  TextInput,
   ActivityIndicator,
   Surface,
   Text,
@@ -22,12 +23,52 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { spacing, borderRadius, elevation } from '../theme/materialTheme';
 
-const LoginScreen: React.FC = () => {
-  const { signInWithGoogle, isLoading } = useAuth();
+interface LoginScreenProps {
+  navigation: any;
+}
+
+const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
+  const { signInWithEmail, signInWithGoogle, isLoading } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [isEmailLoading, setIsEmailLoading] = useState(false);
   const [isDemoLoading, setIsDemoLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const theme = useTheme();
   const { width, height } = Dimensions.get('window');
+
+  const handleEmailSignIn = async () => {
+    if (!email.trim()) {
+      Alert.alert('Error', 'Please enter an email address');
+      return;
+    }
+
+    if (!password.trim()) {
+      Alert.alert('Error', 'Please enter a password');
+      return;
+    }
+
+    setIsEmailLoading(true);
+    setError(null);
+    try {
+      const result = await signInWithEmail(email.trim(), password);
+      if (!result.success) {
+        setError(result.error || 'Sign-in failed');
+        Alert.alert('Sign In Failed', result.error || 'Unknown error occurred');
+      }
+      // Navigation will be handled automatically by auth state change
+    } catch (err) {
+      setError('Failed to sign in');
+      Alert.alert('Error', 'An unexpected error occurred');
+    } finally {
+      setIsEmailLoading(false);
+    }
+  };
+
+  const navigateToSignUp = () => {
+    navigation.navigate('SignUp');
+  };
 
   const handleGoogleSignIn = async () => {
     setError(null);
@@ -99,29 +140,96 @@ const LoginScreen: React.FC = () => {
         {/* Sign In Options */}
         <View style={styles.signInSection}>
           
-          {/* Demo Sign In Button */}
-          <Surface style={[styles.buttonContainer, { backgroundColor: theme.colors.surfaceVariant }]} elevation={1}>
-            <MaterialIcons name="person" size={24} color={theme.colors.primary} style={styles.buttonIcon} />
-            <View style={styles.buttonContent}>
-              <Text variant="titleMedium" style={[styles.buttonTitle, { color: theme.colors.onSurfaceVariant }]}>
-                Demo Account
+          {/* Email Sign In Form */}
+          <Card style={[styles.emailFormCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
+            <Card.Content style={styles.emailFormContent}>
+              <Text variant="titleLarge" style={[styles.formTitle, { color: theme.colors.onSurface }]}>
+                Sign In
               </Text>
-              <Text variant="bodySmall" style={[styles.buttonSubtitle, { color: theme.colors.onSurfaceVariant }]}>
-                Explore with sample data
-              </Text>
-            </View>
-            <Button
-              mode="contained"
-              onPress={handleDemoSignIn}
-              loading={isDemoLoading}
-              disabled={isLoading || isDemoLoading}
-              style={[styles.actionButton, { backgroundColor: theme.colors.primary }]}
-              labelStyle={{ color: theme.colors.onPrimary }}
-              contentStyle={styles.buttonContentStyle}
-            >
-              {isDemoLoading ? 'Signing In...' : 'Continue'}
-            </Button>
-          </Surface>
+              
+              <View style={styles.emailForm}>
+                <TextInput
+                  label="Email Address"
+                  value={email}
+                  onChangeText={setEmail}
+                  mode="outlined"
+                  style={styles.inputField}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  textContentType="emailAddress"
+                  left={<TextInput.Icon icon="email" />}
+                  disabled={isLoading || isEmailLoading}
+                />
+
+                <TextInput
+                  label="Password"
+                  value={password}
+                  onChangeText={setPassword}
+                  mode="outlined"
+                  style={styles.inputField}
+                  secureTextEntry={!showPassword}
+                  autoComplete="current-password"
+                  textContentType="password"
+                  left={<TextInput.Icon icon="lock" />}
+                  right={
+                    <TextInput.Icon
+                      icon={showPassword ? "eye-off" : "eye"}
+                      onPress={() => setShowPassword(!showPassword)}
+                    />
+                  }
+                  disabled={isLoading || isEmailLoading}
+                />
+
+                {/* Error Message */}
+                {error && (
+                  <Surface style={[styles.errorContainer, { backgroundColor: theme.colors.errorContainer }]} elevation={1}>
+                    <MaterialIcons name="error" size={20} color={theme.colors.error} />
+                    <Text variant="bodyMedium" style={[styles.errorText, { color: theme.colors.error }]}>
+                      {error}
+                    </Text>
+                  </Surface>
+                )}
+
+                <Button
+                  mode="contained"
+                  onPress={handleEmailSignIn}
+                  loading={isEmailLoading}
+                  disabled={isLoading || isEmailLoading}
+                  style={[styles.signInButton, { backgroundColor: theme.colors.primary }]}
+                  labelStyle={{ color: theme.colors.onPrimary, fontSize: 16, fontWeight: '600' }}
+                  contentStyle={styles.buttonContentStyle}
+                  icon={isEmailLoading ? undefined : "login"}
+                >
+                  {isEmailLoading ? 'Signing In...' : 'Sign In'}
+                </Button>
+
+                {/* Sign Up Prompt */}
+                <View style={styles.signUpPrompt}>
+                  <Text variant="bodyMedium" style={[styles.signUpText, { color: theme.colors.onSurfaceVariant }]}>
+                    Don't have an account?{' '}
+                  </Text>
+                  <Button
+                    mode="text"
+                    onPress={navigateToSignUp}
+                    labelStyle={{ color: theme.colors.primary, fontWeight: '600' }}
+                    disabled={isLoading || isEmailLoading}
+                  >
+                    Sign Up
+                  </Button>
+                </View>
+              </View>
+            </Card.Content>
+          </Card>
+
+          {/* Divider */}
+          <View style={styles.dividerContainer}>
+            <View style={[styles.dividerLine, { backgroundColor: theme.colors.outlineVariant }]} />
+            <Text variant="bodySmall" style={[styles.dividerText, { color: theme.colors.onSurfaceVariant }]}>
+              OR
+            </Text>
+            <View style={[styles.dividerLine, { backgroundColor: theme.colors.outlineVariant }]} />
+          </View>
 
           {/* Google Sign In Button */}
           <Surface style={[styles.buttonContainer, { backgroundColor: theme.colors.surface }]} elevation={2}>
@@ -137,22 +245,46 @@ const LoginScreen: React.FC = () => {
                 Google Account
               </Text>
               <Text variant="bodySmall" style={[styles.buttonSubtitle, { color: theme.colors.onSurfaceVariant }]}>
-                Sync across devices • Cloud backup
+                Quick sign-in with Google
               </Text>
             </View>
             <Button
               mode="contained"
               onPress={handleGoogleSignIn}
-              loading={isLoading && !isDemoLoading}
-              disabled={isLoading || isDemoLoading}
+              loading={isLoading && !isEmailLoading}
+              disabled={isLoading || isEmailLoading}
               style={[styles.actionButton, { backgroundColor: '#4285F4' }]}
               labelStyle={{ color: '#FFFFFF', fontWeight: '600' }}
               contentStyle={styles.buttonContentStyle}
-              icon={isLoading && !isDemoLoading ? undefined : () => 
+              icon={isLoading && !isEmailLoading ? undefined : () => 
                 <MaterialIcons name="login" size={18} color="#FFFFFF" />
               }
             >
-              {isLoading && !isDemoLoading ? 'Signing In...' : 'Sign In'}
+              {isLoading && !isEmailLoading ? 'Signing In...' : 'Continue with Google'}
+            </Button>
+          </Surface>
+
+          {/* Demo Account Option */}
+          <Surface style={[styles.buttonContainer, { backgroundColor: theme.colors.surfaceVariant }]} elevation={1}>
+            <MaterialIcons name="person" size={24} color={theme.colors.primary} style={styles.buttonIcon} />
+            <View style={styles.buttonContent}>
+              <Text variant="titleMedium" style={[styles.buttonTitle, { color: theme.colors.onSurfaceVariant }]}>
+                Demo Account
+              </Text>
+              <Text variant="bodySmall" style={[styles.buttonSubtitle, { color: theme.colors.onSurfaceVariant }]}>
+                Explore with sample data
+              </Text>
+            </View>
+            <Button
+              mode="contained"
+              onPress={handleDemoSignIn}
+              loading={isDemoLoading}
+              disabled={isLoading || isDemoLoading || isEmailLoading}
+              style={[styles.actionButton, { backgroundColor: theme.colors.primary }]}
+              labelStyle={{ color: theme.colors.onPrimary }}
+              contentStyle={styles.buttonContentStyle}
+            >
+              {isDemoLoading ? 'Signing In...' : 'Try Demo'}
             </Button>
           </Surface>
 
@@ -313,6 +445,37 @@ const styles = StyleSheet.create({
   dividerText: {
     marginHorizontal: spacing.md,
     fontWeight: '500',
+  },
+  emailFormCard: {
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.lg,
+  },
+  emailFormContent: {
+    paddingVertical: spacing.lg,
+  },
+  formTitle: {
+    marginBottom: spacing.lg,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  emailForm: {
+    gap: spacing.md,
+  },
+  inputField: {
+    marginBottom: spacing.sm,
+  },
+  signInButton: {
+    marginTop: spacing.md,
+    borderRadius: borderRadius.lg,
+  },
+  signUpPrompt: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: spacing.md,
+  },
+  signUpText: {
+    textAlign: 'center',
   },
   actionButton: {
     borderRadius: borderRadius.lg,

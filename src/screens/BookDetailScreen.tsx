@@ -37,6 +37,7 @@ import currencyUtils from '../utils/currencyUtils';
 import { EntryDebugger } from '../components/EntryDebugger';
 import { ExchangeRateEditor } from '../components/ExchangeRateEditor';
 import preferencesService from '../services/preferences';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type BookDetailRouteProp = RouteProp<RootStackParamList, 'BookDetail'>;
 type BookDetailNavigationProp = StackNavigationProp<RootStackParamList, 'BookDetail'>;
@@ -66,8 +67,26 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
     balance: string;
   }>({ income: '...', expenses: '...', balance: '...' });
   
+  // Developer mode state
+  const [developerMode, setDeveloperMode] = useState(false);
+  
   // Ref to prevent immediate dismissal after opening
   const menuOpenTime = useRef<number>(0);
+
+  // Load developer mode setting
+  useEffect(() => {
+    const loadDeveloperMode = async () => {
+      try {
+        const value = await AsyncStorage.getItem('developer_mode');
+        if (value !== null) {
+          setDeveloperMode(value === 'true');
+        }
+      } catch (error) {
+        console.error('Error loading developer mode:', error);
+      }
+    };
+    loadDeveloperMode();
+  }, []);
 
   const loadEntries = useCallback(async () => {
     try {
@@ -546,8 +565,8 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
         ListEmptyComponent={renderEmptyState}
       />
 
-      {/* Debug Component - Temporary */}
-      <EntryDebugger />
+      {/* Debug Component - Only visible when developer mode is enabled */}
+      {developerMode && <EntryDebugger />}
 
       {/* Add Entry FAB */}
       <FAB

@@ -24,6 +24,7 @@ import asyncStorageService from '../services/asyncStorage';
 import { RootStackParamList } from '../navigation/Navigation';
 import { spacing, borderRadius } from '../theme/materialTheme';
 import { BookItem } from '../components/BookItem';
+import { SyncStatusBanner } from '../components/SyncStatusBanner';
 
 type BooksNavigationProp = StackNavigationProp<RootStackParamList>;
 
@@ -159,6 +160,9 @@ const BooksScreen: React.FC = () => {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      {/* Sync Status Banner */}
+      <SyncStatusBanner />
+      
       <FlatList
         data={sortedBooks}
         renderItem={renderBookItem}

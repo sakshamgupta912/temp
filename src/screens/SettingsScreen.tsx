@@ -1,5 +1,5 @@
 // Settings screen - app configuration and user preferences
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, Alert, Share, Linking } from 'react-native';
 import { Card, Title, List, Button, Switch, useTheme, Text, Divider, Dialog, Portal } from 'react-native-paper';
 import { useAuth } from '../contexts/AuthContext';
@@ -10,11 +10,12 @@ import { RootStackParamList } from '../navigation/Navigation';
 import asyncStorageService from '../services/asyncStorage';
 import { dataCacheService } from '../services/dataCache';
 import { CRUDTester } from '../components/CRUDTester';
+import { SyncStatusBanner } from '../components/SyncStatusBanner';
 
 type SettingsNavigationProp = StackNavigationProp<RootStackParamList>;
 
 const SettingsScreen: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, signOut, enableSync, disableSync, syncNow, getSyncStatus } = useAuth();
   const navigation = useNavigation<SettingsNavigationProp>();
   const theme = useTheme();
 
@@ -24,9 +25,61 @@ const SettingsScreen: React.FC = () => {
   const [darkMode, setDarkMode] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState<string | null>(null);
   
+  // Sync state
+  const [syncStatus, setSyncStatus] = useState(getSyncStatus());
+  const [isSyncLoading, setIsSyncLoading] = useState(false);
+  
+  // Developer/Debug mode state
+  const [developerMode, setDeveloperMode] = useState(false);
+  
   // App info
   const appVersion = '1.0.0';
   const buildNumber = '1';
+
+  // Load developer mode state from storage
+  useEffect(() => {
+    const loadDeveloperMode = async () => {
+      try {
+        const value = await AsyncStorage.getItem('developer_mode');
+        if (value !== null) {
+          setDeveloperMode(value === 'true');
+        }
+      } catch (error) {
+        console.error('Error loading developer mode:', error);
+      }
+    };
+    loadDeveloperMode();
+  }, []);
+
+  // Update sync status periodically
+  useEffect(() => {
+    const updateSyncStatus = () => {
+      setSyncStatus(getSyncStatus());
+    };
+
+    // Initial update
+    updateSyncStatus();
+
+    // Update every 5 seconds
+    const interval = setInterval(updateSyncStatus, 5000);
+
+    return () => clearInterval(interval);
+  }, [getSyncStatus]);
+
+  const handleToggleDeveloperMode = async (value: boolean) => {
+    try {
+      setDeveloperMode(value);
+      await AsyncStorage.setItem('developer_mode', value.toString());
+      Alert.alert(
+        value ? 'Developer Mode Enabled' : 'Developer Mode Disabled',
+        value 
+          ? 'Debug and testing options are now visible.' 
+          : 'Debug and testing options are now hidden.'
+      );
+    } catch (error) {
+      console.error('Error saving developer mode:', error);
+    }
+  };
 
   const handleLogout = () => {
     Alert.alert(
@@ -37,7 +90,7 @@ const SettingsScreen: React.FC = () => {
         { 
           text: 'Logout', 
           style: 'destructive',
-          onPress: logout
+          onPress: signOut
         }
       ]
     );
@@ -118,8 +171,62 @@ const SettingsScreen: React.FC = () => {
     Linking.openURL('mailto:feedback@example.com?subject=Expense App Feedback');
   };
 
+  const handleToggleSync = async () => {
+    try {
+      if (syncStatus.syncEnabled) {
+        await disableSync();
+      } else {
+        await enableSync();
+      }
+      setSyncStatus(getSyncStatus());
+    } catch (error) {
+      console.error('Error toggling sync:', error);
+      Alert.alert('Error', 'Failed to toggle sync');
+    }
+  };
+
+  const handleManualSync = async () => {
+    setIsSyncLoading(true);
+    try {
+      const result = await syncNow();
+      setSyncStatus(getSyncStatus());
+      
+      if (result.success) {
+        Alert.alert('Success', result.message);
+      } else {
+        Alert.alert('Sync Failed', result.message);
+      }
+    } catch (error) {
+      console.error('Error during manual sync:', error);
+      Alert.alert('Error', 'An unexpected error occurred during sync');
+    } finally {
+      setIsSyncLoading(false);
+    }
+  };
+
+  const formatLastSyncTime = (lastSyncTime: Date | null) => {
+    if (!lastSyncTime) return 'Never';
+    
+    const now = new Date();
+    const diffMs = now.getTime() - lastSyncTime.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
+    
+    if (diffHours < 1) {
+      const diffMinutes = Math.floor(diffMs / (1000 * 60));
+      return `${diffMinutes} minute${diffMinutes !== 1 ? 's' : ''} ago`;
+    } else if (diffHours < 24) {
+      const hours = Math.floor(diffHours);
+      return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+    } else {
+      return lastSyncTime.toLocaleDateString();
+    }
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      {/* Sync Status Banner */}
+      <SyncStatusBanner />
+      
       <ScrollView style={styles.scrollView}>
         {/* Account Section */}
         <Card style={styles.card}>
@@ -129,6 +236,74 @@ const SettingsScreen: React.FC = () => {
               title={user?.displayName || 'Demo User'}
               description={user?.email || 'demo@example.com'}
               left={(props) => <List.Icon {...props} icon="account" />}
+            />
+          </Card.Content>
+        </Card>
+
+        {/* Cloud Sync Section */}
+        <Card style={styles.card}>
+          <Card.Content>
+            <Title style={{ color: theme.colors.onSurface }}>Cloud Sync</Title>
+            
+            {/* Sync Toggle */}
+            <List.Item
+              title="Cloud Sync"
+              description={syncStatus.syncEnabled ? 'Data automatically synced to cloud' : 'Sync disabled - data stored locally only'}
+              left={(props) => <List.Icon {...props} icon="cloud-sync" />}
+              right={() => (
+                <Switch
+                  value={syncStatus.syncEnabled}
+                  onValueChange={handleToggleSync}
+                  disabled={isSyncLoading}
+                />
+              )}
+            />
+            
+            <Divider />
+            
+            {/* Sync Status */}
+            <List.Item
+              title="Sync Status"
+              description={
+                syncStatus.isSyncing 
+                  ? 'Syncing...' 
+                  : syncStatus.error 
+                    ? `Error: ${syncStatus.error}`
+                    : `Last sync: ${formatLastSyncTime(syncStatus.lastSyncTime)}`
+              }
+              left={(props) => (
+                <List.Icon 
+                  {...props} 
+                  icon={
+                    syncStatus.isSyncing 
+                      ? "sync" 
+                      : syncStatus.error 
+                        ? "alert-circle" 
+                        : "check-circle"
+                  } 
+                />
+              )}
+            />
+            
+            <Divider />
+            
+            {/* Manual Sync Button */}
+            <List.Item
+              title="Sync Now"
+              description="Manually sync your data to the cloud"
+              left={(props) => <List.Icon {...props} icon="cloud-upload" />}
+              right={() => (
+                <Button
+                  mode="outlined"
+                  onPress={handleManualSync}
+                  disabled={!syncStatus.syncEnabled || isSyncLoading || syncStatus.isSyncing}
+                  loading={isSyncLoading || syncStatus.isSyncing}
+                  compact
+                  style={{ borderColor: theme.colors.primary }}
+                >
+                  {isSyncLoading || syncStatus.isSyncing ? 'Syncing...' : 'Sync'}
+                </Button>
+              )}
             />
           </Card.Content>
         </Card>
@@ -259,14 +434,6 @@ const SettingsScreen: React.FC = () => {
             />
             <Divider />
             <List.Item
-              title="Debug Storage"
-              description="View AsyncStorage data for debugging"
-              left={(props) => <List.Icon {...props} icon="bug" />}
-              right={(props) => <List.Icon {...props} icon="chevron-right" />}
-              onPress={() => navigation.navigate('Debug')}
-            />
-            <Divider />
-            <List.Item
               title="Source Code"
               description="View on GitHub"
               left={(props) => <List.Icon {...props} icon="github" />}
@@ -282,13 +449,49 @@ const SettingsScreen: React.FC = () => {
           </Card.Content>
         </Card>
 
-        {/* Debug Section - CRUD Tester */}
+        {/* Developer Options */}
         <Card style={styles.card}>
           <Card.Content>
-            <Title style={{ color: theme.colors.onSurface }}>Debug & Testing</Title>
-            <CRUDTester />
+            <Title style={{ color: theme.colors.onSurface }}>Advanced</Title>
+            <List.Item
+              title="Developer Mode"
+              description={developerMode ? 'Debug & testing options visible' : 'Enable to show debug & testing options'}
+              left={(props) => <List.Icon {...props} icon="code-braces" />}
+              right={() => (
+                <Switch
+                  value={developerMode}
+                  onValueChange={handleToggleDeveloperMode}
+                />
+              )}
+            />
           </Card.Content>
         </Card>
+
+        {/* Debug Section - Only visible in Developer Mode */}
+        {developerMode && (
+          <>
+            <Card style={styles.card}>
+              <Card.Content>
+                <Title style={{ color: theme.colors.onSurface }}>🔧 Developer Tools</Title>
+                <List.Item
+                  title="Debug Storage"
+                  description="View AsyncStorage data for debugging"
+                  left={(props) => <List.Icon {...props} icon="bug" />}
+                  right={(props) => <List.Icon {...props} icon="chevron-right" />}
+                  onPress={() => navigation.navigate('Debug')}
+                />
+              </Card.Content>
+            </Card>
+
+            {/* Debug Section - CRUD Tester */}
+            <Card style={styles.card}>
+              <Card.Content>
+                <Title style={{ color: theme.colors.onSurface }}>🧪 Testing Tools</Title>
+                <CRUDTester />
+              </Card.Content>
+            </Card>
+          </>
+        )}
 
         {/* Logout */}
         <View style={styles.logoutContainer}>

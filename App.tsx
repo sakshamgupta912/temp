@@ -4,7 +4,6 @@ import { Provider as PaperProvider } from 'react-native-paper';
 import { useColorScheme } from 'react-native';
 import { AuthProvider } from './src/contexts/AuthContext';
 import Navigation from './src/navigation/Navigation';
-import databaseService from './src/services/database';
 import asyncStorageService from './src/services/asyncStorage';
 import { lightTheme, darkTheme } from './src/theme/materialTheme';
 import ErrorBoundary from './src/components/ErrorBoundary';
@@ -14,20 +13,14 @@ export default function App() {
   const colorScheme = useColorScheme();
   const theme = colorScheme === 'dark' ? darkTheme : lightTheme;
   useEffect(() => {
-    // Initialize database on app start
-    const initDatabase = async () => {
+    // Initialize storage on app start
+    const initStorage = async () => {
       try {
-        console.log('App: Trying to initialize SQLite database...');
-        await databaseService.initializeDatabase();
-        console.log('App: SQLite database initialized successfully');
+        console.log('App: Initializing AsyncStorage...');
+        await asyncStorageService.initializeDatabase();
+        console.log('App: AsyncStorage initialized successfully');
       } catch (error) {
-        console.error('App: SQLite failed, falling back to AsyncStorage:', error);
-        try {
-          await asyncStorageService.initializeDatabase();
-          console.log('App: AsyncStorage fallback initialized successfully');
-        } catch (fallbackError) {
-          console.error('App: Both SQLite and AsyncStorage failed:', fallbackError);
-        }
+        console.error('App: AsyncStorage initialization failed:', error);
       }
       
       // Initialize currency system
@@ -43,7 +36,7 @@ export default function App() {
       }
     };
     
-    initDatabase();
+    initStorage();
   }, []);  return (
     <ErrorBoundary>
       <PaperProvider theme={theme}>

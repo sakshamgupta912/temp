@@ -31,6 +31,7 @@ import { useCurrency } from '../hooks/useCurrency';
 import currencyService from '../services/currencyService';
 import preferencesService from '../services/preferences';
 import currencyUtils from '../utils/currencyUtils';
+import { SyncStatusBanner } from '../components/SyncStatusBanner';
 
 type DashboardNavigationProp = StackNavigationProp<RootStackParamList>;
 
@@ -206,6 +207,9 @@ const DashboardScreen: React.FC = () => {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      
+      {/* Sync Status Banner */}
+      <SyncStatusBanner />
       
       {/* Header Section */}
       <Surface style={[styles.headerSection, { backgroundColor: theme.colors.primaryContainer }]} elevation={0}>

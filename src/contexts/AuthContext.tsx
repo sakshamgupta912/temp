@@ -1,14 +1,29 @@
 // Enhanced Authentication Context with Firebase Google Auth
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useState, ReactNode, useRef } from 'react';
 import { User } from '../models/types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { auth } from '../services/firebase';
+import { auth, firestore } from '../services/firebase';
+import { asyncStorageService } from '../services/asyncStorage';
 import { 
   GoogleAuthProvider, 
   signInWithCredential, 
   signOut as firebaseSignOut,
   onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
 } from 'firebase/auth';
+import { 
+  collection, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  serverTimestamp,
+  onSnapshot,
+  query,
+  where 
+} from 'firebase/firestore';
 import * as Google from 'expo-auth-session/providers/google';
 import { makeRedirectUri, ResponseType } from 'expo-auth-session';
 
@@ -16,19 +31,31 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  needsOnboarding: boolean;
   
   // Auth methods
-  signInWithGoogle: () => Promise<{ success: boolean; error?: string }>;
+  signInWithEmail: (email: string, password: string) => Promise<{ success: boolean; error?: string; needsOnboarding?: boolean }>;
+  signUpWithEmail: (email: string, password: string, displayName: string) => Promise<{ success: boolean; error?: string; needsOnboarding?: boolean }>;
+  signInWithGoogle: () => Promise<{ success: boolean; error?: string; needsOnboarding?: boolean }>;
   linkGoogleAccount: () => Promise<{ success: boolean; error?: string }>;
   unlinkGoogleAccount: () => Promise<{ success: boolean; error?: string }>;
   signOut: () => Promise<void>;
+  completeOnboarding: (preferences: any) => Promise<void>;
+  checkOnboardingStatus: () => Promise<boolean>;
   
-  // Sync methods (placeholder)
+  // Sync methods
   enableSync: () => Promise<void>;
   disableSync: () => void;
-  syncNow: () => Promise<{ success: boolean; message: string }>;
+  syncNow: () => Promise<{ success: boolean; message: string; conflicts?: any[] }>;
   getSyncStatus: () => any;
   onSyncStatusChange: (callback: (status: any) => void) => () => void;
+  checkAuthHealth: () => Promise<{ healthy: boolean; message: string | null }>;
+  
+  // Git-style conflict resolution
+  conflicts: any[];
+  conflictCount: number;
+  clearConflicts: () => void;
+  resolveConflicts: (resolutions: Map<string, 'use-local' | 'use-cloud' | any>) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -40,6 +67,25 @@ interface AuthProviderProps {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  
+  // Auto-sync state
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isSyncingRef = useRef(false);
+  const [syncEnabled, setSyncEnabled] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  
+  // Real-time listeners
+  const firestoreListenersRef = useRef<(() => void)[]>([]);
+  
+  // Prevent listener from re-syncing immediately after upload
+  const justUploadedRef = useRef(false);
+  const lastListenerSyncRef = useRef<number>(0);
+  
+  // Git-style conflict state
+  const [conflicts, setConflicts] = useState<any[]>([]);
+  const [conflictCount, setConflictCount] = useState(0);
 
   console.log('🚀 AuthProvider mounted');
 
@@ -70,7 +116,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     loadUserFromStorage();
     
     // Listen to Firebase auth changes
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         const userData: User = {
           id: firebaseUser.uid,
@@ -81,15 +127,33 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         };
         setUser(userData);
         AsyncStorage.setItem('current_user', JSON.stringify(userData));
+        
+        // Skip auto-sync on app reload (first auth event)
+        // Only sync on actual sign-in or later auth changes
+        if (!isInitialLoad) {
+          console.log('🔄 User authenticated - triggering sync...');
+          await syncNow();
+        } else {
+          console.log('⏭️ Initial load - skipping auto-sync');
+          setIsInitialLoad(false);
+        }
       } else {
+        // User signed out or not authenticated
+        console.log('👤 No authenticated user');
         setUser(null);
+        setNeedsOnboarding(false);
+        setSyncEnabled(false);
+        setLastSyncTime(null);
         AsyncStorage.removeItem('current_user');
+        
+        // Cleanup any active listeners
+        cleanupRealtimeListeners();
       }
       setIsLoading(false);
     });
 
     return unsubscribe;
-  }, []);
+  }, [isInitialLoad]);
 
   // Handle Google authentication response
   useEffect(() => {
@@ -132,6 +196,559 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   }, [response]);
 
+  // ============ CLOUD-FIRST MERGE HELPER ============
+  /**
+   * Merges cloud and local data with cloud-first strategy
+   * Cloud items always win conflicts, local-only items are preserved
+   */
+  /**
+   * Intelligent merge with timestamp-based conflict resolution
+   * Strategy: Last-write-wins based on updatedAt timestamp
+   * - If item exists in both: Keep the one with latest updatedAt
+   * - If item only in cloud: Keep it (was added/updated from other device)
+   * - If item only in local: Keep it (pending upload)
+   * - If item marked as deleted: Respect deletion (tombstone marker for multi-device sync)
+   */
+  const mergeCloudFirst = (cloudData: any[], localData: any[]): any[] => {
+    const merged = new Map<string, any>();
+    
+    // Step 1: Add all cloud items to map
+    for (const cloudItem of cloudData) {
+      merged.set(cloudItem.id, { ...cloudItem, source: 'cloud' });
+    }
+    
+    // Step 2: Process local items
+    for (const localItem of localData) {
+      const cloudItem = merged.get(localItem.id);
+      
+      if (!cloudItem) {
+        // Local-only item: Keep it UNLESS it's marked as deleted locally
+        if (!localItem.deleted) {
+          merged.set(localItem.id, { ...localItem, source: 'local-only' });
+        } else {
+          // Local item is deleted - keep tombstone to upload deletion to cloud
+          console.log(`🗑️ Local item deleted: ${localItem.id}, will sync deletion`);
+          merged.set(localItem.id, { ...localItem, source: 'local-deleted' });
+        }
+      } else {
+        // Item exists in both: Check for deletions first, then use timestamp-based conflict resolution
+        const cloudDeleted = cloudItem.deleted === true;
+        const localDeleted = localItem.deleted === true;
+        
+        if (cloudDeleted && localDeleted) {
+          // Both deleted - use the one with newer deletedAt timestamp
+          const cloudDeletedAt = new Date(cloudItem.deletedAt || cloudItem.updatedAt);
+          const localDeletedAt = new Date(localItem.deletedAt || localItem.updatedAt);
+          merged.set(cloudItem.id, localDeletedAt > cloudDeletedAt ? { ...localItem, source: 'local-deleted-newer' } : { ...cloudItem, source: 'cloud-deleted' });
+          console.log(`🗑️ Both deleted: ${cloudItem.id}, keeping ${localDeletedAt > cloudDeletedAt ? 'local' : 'cloud'} version`);
+        } else if (cloudDeleted) {
+          // Cloud says deleted - respect it (deletion wins over updates)
+          console.log(`🗑️ Cloud deleted: ${cloudItem.id}, removing local version`);
+          merged.set(cloudItem.id, { ...cloudItem, source: 'cloud-deleted' });
+        } else if (localDeleted) {
+          // Local says deleted - respect it (deletion wins over updates)
+          console.log(`🗑️ Local deleted: ${localItem.id}, will overwrite cloud`);
+          merged.set(localItem.id, { ...localItem, source: 'local-deleted' });
+        } else {
+          // Neither deleted: Use timestamp-based conflict resolution
+          const cloudUpdatedAt = new Date(cloudItem.updatedAt || cloudItem.createdAt);
+          const localUpdatedAt = new Date(localItem.updatedAt || localItem.createdAt);
+          
+          if (localUpdatedAt > cloudUpdatedAt) {
+            // Local version is newer: Keep local (will overwrite cloud)
+            console.log(`🔄 Conflict: Local version newer for ${localItem.id}, keeping local`);
+            merged.set(localItem.id, { ...localItem, source: 'local-newer' });
+          } else {
+            // Cloud version is newer or equal: Keep cloud
+            if (localUpdatedAt < cloudUpdatedAt) {
+              console.log(`☁️ Conflict: Cloud version newer for ${cloudItem.id}, keeping cloud`);
+            }
+            merged.set(cloudItem.id, { ...cloudItem, source: 'cloud-newer' });
+          }
+        }
+      }
+    }
+    
+    return Array.from(merged.values());
+  };
+
+  // ============ REAL-TIME SYNC LISTENERS ============
+  
+  /**
+   * Setup real-time Firebase listeners for multi-device sync
+   * Changes on Device A immediately reflect on Device B
+   */
+  const setupRealtimeListeners = (userId: string, retryCount: number = 0) => {
+    console.log('🎧 Setting up real-time Firestore listeners...');
+    
+    // Check if Firebase auth is ready
+    if (!auth.currentUser) {
+      if (retryCount < 5) {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 10000); // Exponential backoff, max 10s
+        console.log(`⚠️ Firebase auth not ready, retrying in ${delay}ms... (attempt ${retryCount + 1}/5)`);
+        
+        setTimeout(() => {
+          if (auth.currentUser && user) {
+            setupRealtimeListeners(userId, retryCount + 1);
+          } else if (retryCount >= 4) {
+            console.error('❌ Failed to setup listeners after 5 attempts');
+            console.error('🔐 Session may have expired. User needs to sign in again.');
+          }
+        }, delay);
+        return;
+      } else {
+        console.error('❌ Failed to setup listeners - Auth still not ready after retries');
+        console.error('🔐 User session appears invalid. Please sign in again.');
+        return;
+      }
+    }
+    
+    // Clear any existing listeners
+    firestoreListenersRef.current.forEach(unsubscribe => unsubscribe());
+    firestoreListenersRef.current = [];
+    
+    try {
+      // Listen to user document changes
+      const userDocRef = doc(firestore, 'users', userId);
+      const unsubscribeUser = onSnapshot(userDocRef, async (docSnapshot) => {
+        if (docSnapshot.exists()) {
+          const userData = docSnapshot.data();
+          
+          // Skip if we just uploaded (prevent sync loop)
+          if (justUploadedRef.current) {
+            console.log('⏭️ Skipping listener sync - just uploaded data');
+            justUploadedRef.current = false;
+            return;
+          }
+          
+          // Debounce: Skip if synced less than 2 seconds ago (prevents rapid re-syncs)
+          const now = Date.now();
+          if (now - lastListenerSyncRef.current < 2000) {
+            console.log('⏭️ Skipping listener sync - too soon after last sync');
+            return;
+          }
+          lastListenerSyncRef.current = now;
+          
+          console.log('👤 User document changed, syncing...');
+          console.log('🔀 GIT-STYLE MODE: Three-way merge (base, local, cloud)');
+          
+          // Extract data arrays from cloud
+          const cloudBooks = userData.books || [];
+          const cloudEntries = userData.entries || [];
+          const cloudCategories = userData.categories || [];
+          
+          console.log(`📥 Cloud data: ${cloudBooks.length} books, ${cloudEntries.length} entries, ${cloudCategories.length} categories`);
+          
+          try {
+            // Get local data for merge
+            const localBooks = await asyncStorageService.getBooks(userId);
+            const localCategories = await asyncStorageService.getCategories(userId);
+            let localEntries: any[] = [];
+            for (const book of localBooks) {
+              const bookEntries = await asyncStorageService.getEntries(book.id);
+              localEntries = localEntries.concat(bookEntries);
+            }
+            
+            console.log(`📱 Local data: ${localBooks.length} books, ${localEntries.length} entries, ${localCategories.length} categories`);
+            
+            // THREE-WAY MERGE using Git-style logic
+            const { GitStyleSyncService } = await import('../services/gitStyleSync');
+            
+            const booksResult = GitStyleSyncService.mergeArrays(localBooks, cloudBooks, 'book');
+            const entriesResult = GitStyleSyncService.mergeArrays(localEntries, cloudEntries, 'entry');
+            const categoriesResult = GitStyleSyncService.mergeArrays(localCategories, cloudCategories, 'category');
+            
+            const allConflicts = [
+              ...booksResult.conflicts,
+              ...entriesResult.conflicts,
+              ...categoriesResult.conflicts
+            ];
+            
+            if (allConflicts.length > 0) {
+              console.warn(`⚠️ Real-time listener: ${allConflicts.length} conflicts detected`);
+              console.warn('Conflicts will be saved with cloud values by default');
+              // TODO: Notify user about conflicts via UI
+              // For now, merged data already has cloud values for conflicts
+            } else {
+              console.log('✅ No conflicts - auto-merged successfully');
+            }
+            
+            // Save merged data (includes conflicts with cloud values)
+            await saveDownloadedDataToLocal(userId, booksResult.merged, entriesResult.merged, categoriesResult.merged);
+            
+            setLastSyncTime(new Date());
+            console.log('✅ Real-time sync complete - Data merged using Git-style three-way merge');
+          } catch (mergeError) {
+            console.error('❌ Git-style merge failed in listener, falling back to cloud data:', mergeError);
+            // Fallback: Use cloud data directly
+            await saveDownloadedDataToLocal(userId, cloudBooks, cloudEntries, cloudCategories);
+            setLastSyncTime(new Date());
+          }
+        }
+      }, async (error) => {
+        console.error('❌ Firestore listener error:', error);
+        console.error('Error code:', error.code);
+        console.error('Error message:', error.message);
+        
+        // Handle permission errors (usually means session expired)
+        if (error.code === 'permission-denied' || 
+            error.code === 'unauthenticated' ||
+            error.message?.includes('Missing or insufficient permissions')) {
+          
+          console.error('🔐 Permission denied - Session expired or user unauthorized');
+          console.error('🔐 Signing out user and cleaning up...');
+          
+          // Cleanup listeners first
+          cleanupRealtimeListeners();
+          
+          // Disable sync
+          setSyncEnabled(false);
+          
+          // Clear user session
+          setUser(null);
+          setNeedsOnboarding(false);
+          await AsyncStorage.removeItem('current_user');
+          
+          // Note: Don't call signOut() here to avoid potential loop
+          // The UI should detect user is null and redirect to login
+          
+          console.log('🔐 User session cleared. Please sign in again.');
+        } else {
+          // Other errors - just cleanup listeners but keep user signed in
+          console.error('⚠️ Listener error (non-auth) - cleaning up listeners');
+          cleanupRealtimeListeners();
+        }
+      });
+      
+      firestoreListenersRef.current.push(unsubscribeUser);
+      console.log('✅ Real-time listeners active');
+      
+    } catch (error) {
+      console.error('❌ Failed to setup real-time listeners:', error);
+    }
+  };
+  
+  /**
+   * Cleanup real-time listeners
+   */
+  const cleanupRealtimeListeners = () => {
+    console.log('🧹 Cleaning up real-time listeners...');
+    firestoreListenersRef.current.forEach(unsubscribe => unsubscribe());
+    firestoreListenersRef.current = [];
+  };
+
+  // ============ FIREBASE SYNC FUNCTIONS ============
+  
+  /**
+   * Converts ISO date strings back to Date objects
+   */
+  const deserializeFirestoreData = (data: any): any => {
+    if (data === null || data === undefined) {
+      return data;
+    }
+    
+    // Check if it's an ISO date string
+    if (typeof data === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z$/.test(data)) {
+      return new Date(data);
+    }
+    
+    if (Array.isArray(data)) {
+      return data.map(item => deserializeFirestoreData(item));
+    }
+    
+    if (typeof data === 'object') {
+      const deserialized: any = {};
+      for (const key in data) {
+        deserialized[key] = deserializeFirestoreData(data[key]);
+      }
+      return deserialized;
+    }
+    
+    return data;
+  };
+  
+  /**
+   * Downloads data from Firebase (master database)
+   */
+  const downloadFirestoreData = async (userId: string) => {
+    const userDocRef = doc(firestore, 'users', userId);
+    const userDoc = await getDoc(userDocRef);
+    
+    if (!userDoc.exists()) {
+      return { books: [], entries: [], categories: [] };
+    }
+    
+    const data = userDoc.data();
+    
+    // Deserialize: Convert ISO strings back to Date objects
+    return {
+      books: deserializeFirestoreData(data.books || []),
+      entries: deserializeFirestoreData(data.entries || []),
+      categories: deserializeFirestoreData(data.categories || []),
+    };
+  };
+
+  /**
+   * Saves merged data to AsyncStorage
+   * Temporarily disables callback to prevent triggering another sync
+   */
+  const saveDownloadedDataToLocal = async (
+    userId: string,
+    books: any[],
+    entries: any[],
+    categories: any[]
+  ) => {
+    // Temporarily disable auto-sync callback during save
+    const originalCallback = asyncStorageService['onDataChangedCallback' as keyof typeof asyncStorageService];
+    asyncStorageService.setOnDataChanged(null);
+
+    try {
+      // CLOUD-FIRST: Completely replace local data with cloud data
+      // This ensures deletions sync properly (no resurrection)
+      await AsyncStorage.setItem('budget_app_books', JSON.stringify(books));
+      await AsyncStorage.setItem('budget_app_entries', JSON.stringify(entries));
+      await AsyncStorage.setItem('budget_app_categories', JSON.stringify(categories));
+      
+      // Invalidate all caches to force fresh read from storage
+      const dataCacheService = (await import('../services/dataCache')).dataCacheService;
+      await dataCacheService.invalidatePattern('books');
+      await dataCacheService.invalidatePattern('entries');
+      await dataCacheService.invalidatePattern('categories');
+      
+      console.log('✅ Cloud data saved to local storage (replaced completely)');
+      console.log(`   📚 Books: ${books.length}, 📝 Entries: ${entries.length}, 🏷️ Categories: ${categories.length}`);
+    } finally {
+      // Re-enable callback
+      asyncStorageService.setOnDataChanged(originalCallback as (() => void) | null);
+    }
+  };
+
+  /**
+   * Converts Date objects to ISO strings for Firestore compatibility
+   */
+  const sanitizeDataForFirestore = (data: any): any => {
+    if (data === null || data === undefined) {
+      return data;
+    }
+    
+    // Handle Date objects
+    if (data instanceof Date) {
+      return data.toISOString();
+    }
+    
+    // Handle date strings that look like they came from new Date().toString()
+    // or other non-ISO formats - convert to proper ISO
+    if (typeof data === 'string') {
+      // Try to parse as date if it looks like a date string
+      const dateTest = new Date(data);
+      if (!isNaN(dateTest.getTime()) && data.includes('T')) {
+        // It's a valid date string, ensure it's ISO format
+        return dateTest.toISOString();
+      }
+      return data; // Return as-is if not a date string
+    }
+    
+    if (Array.isArray(data)) {
+      return data.map(item => sanitizeDataForFirestore(item));
+    }
+    
+    if (typeof data === 'object') {
+      const sanitized: any = {};
+      for (const key in data) {
+        sanitized[key] = sanitizeDataForFirestore(data[key]);
+      }
+      return sanitized;
+    }
+    
+    return data;
+  };
+
+  /**
+   * Uploads local data to Firebase (master database)
+   */
+  const syncLocalDataToFirestore = async (userId: string) => {
+    // IMPORTANT: Use getAllX() methods to include deleted items (tombstones)
+    // This ensures deletions sync to Firebase so other devices know about them
+    const books = await asyncStorageService.getAllBooks(userId);
+    const categories = await asyncStorageService.getAllCategories(userId);
+    const allEntries = await asyncStorageService.getAllEntries(userId);
+
+    console.log('📝 Raw data before sanitization:', {
+      entriesCount: allEntries.length,
+      sampleEntry: allEntries[0] ? {
+        id: allEntries[0].id,
+        date: allEntries[0].date,
+        dateType: typeof allEntries[0].date,
+        dateInstanceOf: allEntries[0].date instanceof Date,
+        createdAt: allEntries[0].createdAt,
+        createdAtType: typeof allEntries[0].createdAt,
+        createdAtInstanceOf: allEntries[0].createdAt instanceof Date,
+      } : 'no entries'
+    });
+
+    // Sanitize data: Convert Date objects to ISO strings
+    const sanitizedBooks = sanitizeDataForFirestore(books);
+    const sanitizedEntries = sanitizeDataForFirestore(allEntries);
+    const sanitizedCategories = sanitizeDataForFirestore(categories);
+
+    console.log('🧹 Sanitized data ready for upload:', {
+      booksCount: sanitizedBooks.length,
+      entriesCount: sanitizedEntries.length,
+      categoriesCount: sanitizedCategories.length,
+      sampleEntry: sanitizedEntries[0] ? {
+        id: sanitizedEntries[0].id,
+        date: sanitizedEntries[0].date,
+        createdAt: sanitizedEntries[0].createdAt,
+        dateType: typeof sanitizedEntries[0].date,
+        createdAtType: typeof sanitizedEntries[0].createdAt
+      } : 'no entries'
+    });
+
+    const userDocRef = doc(firestore, 'users', userId);
+    
+    // Set flag to prevent listener from re-syncing after this upload
+    justUploadedRef.current = true;
+    console.log('📤 Setting upload flag to prevent sync loop');
+    
+    await setDoc(userDocRef, {
+      books: sanitizedBooks,
+      entries: sanitizedEntries,
+      categories: sanitizedCategories,
+      lastSyncAt: serverTimestamp(),
+    }, { merge: true });
+  };
+
+  /**
+   * GIT-STYLE SYNC: Pull → Merge → Push
+   * Like Git: Always pull (download) before push (upload)
+   */
+  const gitStyleSync = async (userId: string): Promise<{ success: boolean; message: string; conflicts?: any[] }> => {
+    try {
+      console.log('🔀 Starting Git-style sync: PULL → MERGE → PUSH');
+      
+      // STEP 1: PULL (Download from cloud first, like 'git pull')
+      console.log('📥 PULL: Downloading latest from cloud...');
+      const { books: cloudBooks, entries: cloudEntries, categories: cloudCategories } = 
+        await downloadFirestoreData(userId);
+      
+      // STEP 2: GET LOCAL CHANGES (like 'git status')
+      // IMPORTANT: Use getAllX() methods to include deleted items (tombstones)
+      console.log('📱 Getting local changes (including deletions)...');
+      const localBooks = await asyncStorageService.getAllBooks(userId);
+      const localCategories = await asyncStorageService.getAllCategories(userId);
+      const localEntries = await asyncStorageService.getAllEntries(userId);
+      
+      // STEP 3: MERGE (Three-way merge, like 'git merge')
+      console.log('🔀 MERGE: Three-way merge (base, local, cloud)...');
+      const { GitStyleSyncService } = await import('../services/gitStyleSync');
+      
+      const booksResult = GitStyleSyncService.mergeArrays(localBooks, cloudBooks, 'book');
+      const entriesResult = GitStyleSyncService.mergeArrays(localEntries, cloudEntries, 'entry');
+      const categoriesResult = GitStyleSyncService.mergeArrays(localCategories, cloudCategories, 'category');
+      
+      const allConflicts = [
+        ...booksResult.conflicts,
+        ...entriesResult.conflicts,
+        ...categoriesResult.conflicts
+      ];
+      
+      if (allConflicts.length > 0) {
+        console.warn(`⚠️ CONFLICTS DETECTED: ${allConflicts.length} conflicts need resolution`);
+        console.warn('Conflicts:', allConflicts);
+        
+        // Store conflicts in state for UI to display
+        setConflicts(allConflicts);
+        setConflictCount(allConflicts.length);
+        
+        // Save merged data locally (with cloud values for conflicts)
+        await saveDownloadedDataToLocal(userId, booksResult.merged, entriesResult.merged, categoriesResult.merged);
+        
+        return {
+          success: false,
+          message: `⚠️ ${allConflicts.length} conflict(s) detected. Please resolve manually.`,
+          conflicts: allConflicts
+        };
+      }
+      
+      // STEP 4: SAVE MERGED DATA LOCALLY (like updating working directory after merge)
+      console.log('💾 Saving merged data locally...');
+      await saveDownloadedDataToLocal(userId, booksResult.merged, entriesResult.merged, categoriesResult.merged);
+      
+      // STEP 5: PUSH (Upload to cloud, like 'git push')
+      console.log('📤 PUSH: Uploading merged data to cloud...');
+      await syncLocalDataToFirestore(userId);
+      
+      console.log('✅ Git-style sync complete: No conflicts');
+      return {
+        success: true,
+        message: '✅ Sync complete'
+      };
+      
+    } catch (error: any) {
+      console.error('❌ Git-style sync failed:', error);
+      return {
+        success: false,
+        message: `Sync failed: ${error.message}`
+      };
+    }
+  };
+
+  /**
+   * Triggers auto-sync after debounce delay
+   * Uses Git-style PULL → MERGE → PUSH
+   */
+  const triggerAutoSync = () => {
+    if (!user) return;
+    
+    // Clear existing timeout
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+    }
+    
+    // Set new timeout (2 second debounce)
+    syncTimeoutRef.current = setTimeout(async () => {
+      if (user && !isSyncingRef.current) {
+        console.log('⏰ Auto-sync triggered (2s debounce) - Using Git-style sync');
+        
+        // Check if auth is still valid
+        if (!auth.currentUser) {
+          console.error('❌ Auto-sync aborted - No authenticated user');
+          console.error('🔐 Session may have expired');
+          return;
+        }
+        
+        // GIT-STYLE: Pull → Merge → Push
+        try {
+          const result = await gitStyleSync(user.id);
+          
+          if (result.success) {
+            console.log('✅ Auto-sync complete');
+            setLastSyncTime(new Date());
+          } else if (result.conflicts && result.conflicts.length > 0) {
+            console.warn('⚠️ Auto-sync: Conflicts detected');
+            // TODO: Show conflict resolution UI
+            // For now, just log the conflicts
+          }
+        } catch (error: any) {
+          console.error('❌ Auto-sync failed:', error);
+          console.error('Error code:', error?.code);
+          
+          // Handle auth errors
+          if (error?.code === 'permission-denied' || 
+              error?.code === 'unauthenticated' ||
+              error?.message?.includes('Missing or insufficient permissions')) {
+            
+            console.error('🔐 Auto-sync failed due to permission error - Session expired');
+            console.error('🔐 User needs to sign in again');
+            
+            // Clear session
+            await signOut();
+          }
+        }
+      }
+    }, 2000);
+  };
+
   const loadUserFromStorage = async () => {
     try {
       // Firebase auth state will handle user loading
@@ -146,7 +763,87 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Don't set loading to false here - let Firebase auth handle it
   };
 
-  // Real Google Sign-In implementation
+  // ============ EMAIL/PASSWORD AUTHENTICATION ============
+  
+  const signInWithEmail = async (email: string, password: string): Promise<{ success: boolean; error?: string; needsOnboarding?: boolean }> => {
+    try {
+      setIsLoading(true);
+      console.log('🔐 Signing in with email:', email);
+      
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      console.log('✅ Email sign-in successful:', userCredential.user.email);
+      
+      // Check if onboarding is needed
+      const needsOnboarding = await checkOnboardingStatus();
+      setNeedsOnboarding(needsOnboarding);
+      
+      // User state will be updated by onAuthStateChanged listener
+      return { success: true, needsOnboarding };
+      
+    } catch (error: any) {
+      console.error('❌ Email sign-in error:', error);
+      
+      let errorMessage = 'Failed to sign in';
+      if (error.code === 'auth/user-not-found') {
+        errorMessage = 'No account found with this email';
+      } else if (error.code === 'auth/wrong-password') {
+        errorMessage = 'Incorrect password';
+      } else if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Invalid email address';
+      } else if (error.code === 'auth/user-disabled') {
+        errorMessage = 'This account has been disabled';
+      } else if (error.code === 'auth/too-many-requests') {
+        errorMessage = 'Too many failed attempts. Please try again later';
+      }
+      
+      return { success: false, error: errorMessage };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const signUpWithEmail = async (email: string, password: string, displayName: string): Promise<{ success: boolean; error?: string; needsOnboarding?: boolean }> => {
+    try {
+      setIsLoading(true);
+      console.log('📝 Creating account with email:', email);
+      
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      console.log('✅ Account created:', userCredential.user.email);
+      
+      // Update display name
+      if (displayName) {
+        await updateProfile(userCredential.user, { displayName });
+        console.log('✅ Display name updated:', displayName);
+      }
+      
+      // New accounts always need onboarding
+      setNeedsOnboarding(true);
+      
+      // User state will be updated by onAuthStateChanged listener
+      return { success: true, needsOnboarding: true };
+      
+    } catch (error: any) {
+      console.error('❌ Sign-up error:', error);
+      
+      let errorMessage = 'Failed to create account';
+      if (error.code === 'auth/email-already-in-use') {
+        errorMessage = 'An account with this email already exists';
+      } else if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Invalid email address';
+      } else if (error.code === 'auth/weak-password') {
+        errorMessage = 'Password should be at least 6 characters';
+      } else if (error.code === 'auth/operation-not-allowed') {
+        errorMessage = 'Email/password sign-up is not enabled';
+      }
+      
+      return { success: false, error: errorMessage };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // ============ GOOGLE AUTHENTICATION ============
+  
   const signInWithGoogle = async (): Promise<{ success: boolean; error?: string }> => {
     try {
       setIsLoading(true);
@@ -199,37 +896,518 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const signOut = async (): Promise<void> => {
     try {
       setIsLoading(true);
+      console.log('🚪 Signing out...');
+      
+      // Step 1: Disable sync to prevent any ongoing sync operations
+      if (syncEnabled) {
+        disableSync();
+      }
+      
+      // Step 2: Cleanup real-time listeners
+      cleanupRealtimeListeners();
+      
+      // Step 3: Clear any pending sync timeouts
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+      
+      // Step 4: Reset sync state
+      isSyncingRef.current = false;
+      setLastSyncTime(null);
+      setSyncEnabled(false);
+      
+      // Step 5: Clear user state BEFORE Firebase signout
+      setUser(null);
+      setNeedsOnboarding(false);
+      
+      // Step 6: Clear AsyncStorage user data
+      await AsyncStorage.removeItem('current_user');
+      await AsyncStorage.removeItem('onboarding_completed');
+      await AsyncStorage.removeItem('user_preferences');
+      console.log('🗑️ Cleared local user data');
+      
+      // Step 7: Sign out from Firebase
       await firebaseSignOut(auth);
+      
       console.log('✅ Signed out successfully');
     } catch (error: any) {
-      console.error('Error signing out:', error);
+      console.error('❌ Error signing out:', error);
+      // Even if Firebase signout fails, clear local state
+      setUser(null);
+      setNeedsOnboarding(false);
+      await AsyncStorage.removeItem('current_user').catch(() => {});
     } finally {
       setIsLoading(false);
     }
   };
 
+  // ============ ONBOARDING METHODS ============
+  
+  /**
+   * Check if user needs onboarding
+   * Returns true if:
+   * - No onboarding_completed flag in AsyncStorage
+   * - No user_preferences in AsyncStorage
+   * - No user document in Firestore
+   * - User document exists but is missing required fields
+   */
+  const checkOnboardingStatus = async (): Promise<boolean> => {
+    try {
+      console.log('🔍 Checking onboarding status...');
+      
+      // Check local storage first
+      const onboardingCompleted = await AsyncStorage.getItem('onboarding_completed');
+      const userPreferences = await AsyncStorage.getItem('user_preferences');
+      
+      if (onboardingCompleted === 'true' && userPreferences) {
+        console.log('✅ Onboarding already completed (local)');
+        return false; // No onboarding needed
+      }
+      
+      // Check Firebase if user is authenticated
+      if (auth.currentUser) {
+        const userDocRef = doc(firestore, 'userData', auth.currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        
+        if (userDoc.exists()) {
+          const data = userDoc.data();
+          // Check if essential data exists
+          const hasEssentialData = data.categories && data.categories.length > 0;
+          
+          if (hasEssentialData && onboardingCompleted === 'true') {
+            console.log('✅ Onboarding completed (Firebase data exists)');
+            return false;
+          }
+        }
+      }
+      
+      console.log('⚠️ Onboarding needed');
+      return true; // Onboarding needed
+    } catch (error) {
+      console.error('Error checking onboarding status:', error);
+      // Default to showing onboarding if check fails
+      return true;
+    }
+  };
+
+  /**
+   * Complete onboarding and save user preferences
+   */
+  const completeOnboarding = async (preferences: any): Promise<void> => {
+    try {
+      console.log('✅ Completing onboarding with preferences:', preferences);
+      
+      // Save preferences to AsyncStorage
+      await AsyncStorage.setItem('user_preferences', JSON.stringify(preferences));
+      await AsyncStorage.setItem('onboarding_completed', 'true');
+      
+      // Update user currency in local state
+      if (user) {
+        const updatedUser = {
+          ...user,
+          defaultCurrency: preferences.currency,
+        };
+        setUser(updatedUser);
+        await AsyncStorage.setItem('current_user', JSON.stringify(updatedUser));
+      }
+      
+      // Create default categories if they don't exist
+      if (user) {
+        const existingCategories = await asyncStorageService.getCategories(user.id);
+        if (existingCategories.length === 0) {
+          console.log('📝 Creating default categories...');
+          const defaultCategories = [
+            { userId: user.id, name: 'Food & Dining', icon: 'food', color: '#FF6B6B', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Transportation', icon: 'car', color: '#4ECDC4', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Shopping', icon: 'shopping-bag', color: '#FFD93D', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Entertainment', icon: 'ticket', color: '#95E1D3', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Bills & Utilities', icon: 'receipt', color: '#F38181', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Healthcare', icon: 'medical-bag', color: '#AA96DA', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Education', icon: 'school', color: '#FCBAD3', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Others', icon: 'dots-horizontal', color: '#A8D8EA', version: 1, lastModifiedBy: user.id },
+          ];
+          
+          for (const category of defaultCategories) {
+            await asyncStorageService.createCategory(category);
+          }
+        }
+      }
+      
+      // Enable cloud sync if user chose to
+      if (preferences.enableCloudSync && user) {
+        console.log('☁️ Enabling cloud sync...');
+        await enableSync();
+      }
+      
+      // Save to Firestore
+      if (auth.currentUser) {
+        const userDocRef = doc(firestore, 'userData', auth.currentUser.uid);
+        await setDoc(userDocRef, {
+          preferences,
+          onboardingCompletedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+      
+      setNeedsOnboarding(false);
+      console.log('🎉 Onboarding completed successfully!');
+    } catch (error) {
+      console.error('Error completing onboarding:', error);
+      throw error;
+    }
+  };
+
   const enableSync = async (): Promise<void> => {
-    // TODO: Implement with Firebase sync
-    console.log('🔧 Sync not yet implemented');
+    console.log('✅ Auto-sync enabled');
+    
+    if (!user) {
+      console.error('❌ Cannot enable sync - no user');
+      return;
+    }
+    
+    // Register callback with asyncStorage for data changes
+    asyncStorageService.setOnDataChanged(triggerAutoSync);
+    setSyncEnabled(true);
+    
+    // Setup real-time listeners for multi-device sync
+    setupRealtimeListeners(user.id);
+    
+    // CRITICAL: Use Git-style sync when re-enabling to preserve local changes
+    // This prevents data loss when user:
+    // 1. Disables sync
+    // 2. Makes local changes (creates books, entries, etc.)
+    // 3. Re-enables sync
+    // Without this, cloud would overwrite local changes!
+    console.log('🔀 Enabling sync with Git-style merge to preserve local changes...');
+    const result = await gitStyleSync(user.id);
+    
+    if (result.success) {
+      console.log('✅ Sync enabled successfully - local changes preserved');
+    } else if (result.conflicts && result.conflicts.length > 0) {
+      console.warn(`⚠️ ${result.conflicts.length} conflicts detected while enabling sync`);
+      console.warn('User will need to resolve these conflicts');
+    } else {
+      console.error('❌ Failed to enable sync:', result.message);
+    }
   };
 
   const disableSync = (): void => {
-    // TODO: Implement
-    console.log('🔧 Sync disabled');
+    console.log('🛑 Auto-sync disabled');
+    // Clear timeout and remove callback
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = null;
+    }
+    asyncStorageService.setOnDataChanged(null);
+    setSyncEnabled(false);
+    
+    // Cleanup real-time listeners
+    cleanupRealtimeListeners();
   };
 
   const syncNow = async (): Promise<{ success: boolean; message: string }> => {
-    // TODO: Implement
-    return { success: false, message: 'Sync not yet implemented' };
+    if (!user) {
+      return { success: false, message: 'No user authenticated' };
+    }
+
+    if (isSyncingRef.current) {
+      console.log('⏭️ Sync already in progress, skipping...');
+      return { success: false, message: 'Sync already in progress' };
+    }
+
+    try {
+      isSyncingRef.current = true;
+      console.log('🔄 Starting cloud-first sync...');
+
+      // Wait for auth to be ready (up to 3 seconds)
+      let attempts = 0;
+      while (!auth.currentUser && attempts < 6) {
+        console.log(`⏳ Waiting for auth... (${attempts + 1}/6)`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        attempts++;
+      }
+
+      if (!auth.currentUser) {
+        console.error('❌ Auth session expired or not initialized');
+        console.error('🔐 User needs to sign in again');
+        
+        // Clear local auth state
+        setUser(null);
+        setNeedsOnboarding(false);
+        setSyncEnabled(false);
+        await AsyncStorage.removeItem('current_user');
+        
+        return { 
+          success: false, 
+          message: '🔐 Session expired. Please sign in again.' 
+        };
+      }
+
+      // Force token refresh to prevent permission errors
+      console.log('🔑 Refreshing auth token...');
+      try {
+        await auth.currentUser.getIdToken(true);
+        console.log('✅ Auth token refreshed successfully');
+      } catch (tokenError: any) {
+        console.error('❌ Token refresh failed:', tokenError.message);
+        
+        // Token refresh failed - likely session expired
+        if (tokenError.code === 'auth/user-token-expired' || 
+            tokenError.code === 'auth/invalid-user-token' ||
+            tokenError.code === 'auth/user-disabled') {
+          
+          console.error('🔐 Session invalid - signing out user');
+          
+          // Force sign out
+          await signOut();
+          
+          return { 
+            success: false, 
+            message: '🔐 Your session has expired. Please sign in again.' 
+          };
+        }
+        
+        // Other token error - retry might work
+        throw tokenError;
+      }
+
+      // Retry logic with backoff (3 attempts)
+      let lastError: Error | null = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          console.log(`📡 Sync attempt ${attempt}/3...`);
+
+          // Check if this is first-time sync
+          const userDocRef = doc(firestore, 'users', user.id);
+          const userDataDoc = await getDoc(userDocRef);
+
+          if (!userDataDoc.exists()) {
+            // First time ever - upload local data to create master database
+            console.log('📤 First sync: Creating master database in Firebase');
+            await syncLocalDataToFirestore(user.id);
+            console.log('✅ First sync complete');
+            setLastSyncTime(new Date());
+            return { success: true, message: 'First sync complete' };
+          }
+
+          // ============ PURE CLOUD-FIRST STRATEGY ============
+          // Cloud is the single source of truth - just download and replace local data
+          console.log('� Step 1: Downloading data from Firebase (cloud is source of truth)...');
+          const { books: cloudBooks, entries: cloudEntries, categories: cloudCategories } = 
+            await downloadFirestoreData(user.id);
+
+          console.log('📊 Cloud data:', { 
+            books: cloudBooks.length, 
+            entries: cloudEntries.length, 
+            categories: cloudCategories.length 
+          });
+
+          console.log('💾 Step 2: Replacing local data with cloud data...');
+          await saveDownloadedDataToLocal(user.id, cloudBooks, cloudEntries, cloudCategories);
+
+          console.log('✅ Cloud-first sync complete - Local data replaced with cloud data');
+          setLastSyncTime(new Date());
+          return { success: true, message: 'Sync complete' };
+
+        } catch (error: any) {
+          lastError = error;
+          console.error(`❌ Sync attempt ${attempt} failed:`, error.message);
+          console.error('Error code:', error.code);
+          console.error('Error details:', error);
+          
+          // Check for authentication/permission errors
+          if (error.code === 'permission-denied' || 
+              error.code === 'unauthenticated' ||
+              error.message?.includes('Missing or insufficient permissions') ||
+              error.message?.includes('PERMISSION_DENIED')) {
+            
+            console.error('🔐 Permission denied - Session may have expired');
+            
+            // Clear auth state and force re-login
+            await signOut();
+            
+            return {
+              success: false,
+              message: '🔐 Session expired. Please sign in again to continue syncing.'
+            };
+          }
+          
+          // Check for network errors
+          if (error.code === 'unavailable' || 
+              error.message?.includes('network') ||
+              error.message?.includes('offline')) {
+            
+            console.error('📡 Network error detected');
+            
+            if (attempt >= 3) {
+              return {
+                success: false,
+                message: '📡 Network error. Please check your internet connection and try again.'
+              };
+            }
+          }
+          
+          if (attempt < 3) {
+            const delay = attempt * 500; // 500ms, 1000ms
+            console.log(`⏳ Retrying in ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+      }
+
+      // All attempts failed
+      console.error('❌ All sync attempts failed');
+      console.error('Last error:', lastError);
+      
+      // Provide user-friendly error message
+      let userMessage = 'Sync failed. Please try again.';
+      
+      if (lastError?.message) {
+        if (lastError.message.includes('network') || lastError.message.includes('fetch')) {
+          userMessage = '📡 Network error. Please check your internet connection.';
+        } else if (lastError.message.includes('permission') || lastError.message.includes('auth')) {
+          userMessage = '🔐 Authentication error. Please sign in again.';
+        } else {
+          userMessage = `Sync failed: ${lastError.message}`;
+        }
+      }
+      
+      return { 
+        success: false, 
+        message: userMessage
+      };
+
+    } catch (error: any) {
+      console.error('❌ Sync error:', error);
+      return { success: false, message: error.message || 'Sync failed' };
+    } finally {
+      isSyncingRef.current = false;
+    }
+  };
+
+  /**
+   * Check if current auth session is healthy and valid
+   * Returns error message if session is invalid, null if healthy
+   */
+  const checkAuthHealth = async (): Promise<{ healthy: boolean; message: string | null }> => {
+    try {
+      // Check if user exists in context
+      if (!user) {
+        return { healthy: false, message: '🔐 No user session. Please sign in.' };
+      }
+      
+      // Check if Firebase auth exists
+      if (!auth.currentUser) {
+        return { healthy: false, message: '🔐 Session expired. Please sign in again.' };
+      }
+      
+      // Try to refresh token
+      try {
+        await auth.currentUser.getIdToken(true);
+        console.log('✅ Auth health check passed');
+        return { healthy: true, message: null };
+      } catch (tokenError: any) {
+        console.error('❌ Token refresh failed during health check:', tokenError);
+        
+        if (tokenError.code === 'auth/user-token-expired' || 
+            tokenError.code === 'auth/invalid-user-token' ||
+            tokenError.code === 'auth/user-disabled' ||
+            tokenError.code === 'auth/user-not-found') {
+          
+          return { 
+            healthy: false, 
+            message: '🔐 Your session has expired. Please sign in again.' 
+          };
+        }
+        
+        return { 
+          healthy: false, 
+          message: `🔐 Authentication error: ${tokenError.message}` 
+        };
+      }
+    } catch (error: any) {
+      console.error('❌ Auth health check failed:', error);
+      return { 
+        healthy: false, 
+        message: `🔐 Session check failed: ${error.message}` 
+      };
+    }
+  };
+
+  /**
+   * Clear all conflicts
+   */
+  const clearConflicts = () => {
+    setConflicts([]);
+    setConflictCount(0);
+    console.log('✅ Conflicts cleared');
+  };
+
+  /**
+   * Resolve conflicts with user's choices
+   */
+  const resolveConflicts = async (resolutions: Map<string, 'use-local' | 'use-cloud' | any>): Promise<void> => {
+    if (!user) {
+      console.error('❌ Cannot resolve conflicts - no user');
+      return;
+    }
+
+    try {
+      console.log(`🔧 Resolving ${conflicts.length} conflicts...`);
+      
+      // Import Git-style sync service
+      const { GitStyleSyncService } = await import('../services/gitStyleSync');
+      
+      // Get current data (including deleted items for deletion conflict resolution)
+      const books = await asyncStorageService.getAllBooks(user.id);
+      const categories = await asyncStorageService.getAllCategories(user.id);
+      const entries = await asyncStorageService.getAllEntries(user.id);
+      
+      // Apply resolutions
+      const resolvedBooks = GitStyleSyncService.resolveConflicts(
+        books,
+        conflicts.filter(c => c.entityType === 'book'),
+        resolutions
+      );
+      
+      const resolvedEntries = GitStyleSyncService.resolveConflicts(
+        entries,
+        conflicts.filter(c => c.entityType === 'entry'),
+        resolutions
+      );
+      
+      const resolvedCategories = GitStyleSyncService.resolveConflicts(
+        categories,
+        conflicts.filter(c => c.entityType === 'category'),
+        resolutions
+      );
+      
+      // Save resolved data locally
+      await saveDownloadedDataToLocal(user.id, resolvedBooks, resolvedEntries, resolvedCategories);
+      
+      // Upload to cloud
+      await syncLocalDataToFirestore(user.id);
+      
+      // Clear conflicts
+      clearConflicts();
+      
+      console.log('✅ Conflicts resolved and synced');
+    } catch (error) {
+      console.error('❌ Failed to resolve conflicts:', error);
+      throw error;
+    }
   };
 
   const getSyncStatus = () => {
     return {
+      syncEnabled: syncEnabled,
       isOnline: true,
-      lastSyncTime: null,
-      isSyncing: false,
+      lastSyncTime: lastSyncTime,
+      isSyncing: isSyncingRef.current,
       pendingChanges: 0,
-      error: 'Sync not yet implemented'
+      conflictCount: conflictCount,
+      hasConflicts: conflictCount > 0,
+      error: null
     };
   };
 
@@ -242,15 +1420,25 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     user,
     isLoading,
     isAuthenticated: user !== null,
+    needsOnboarding,
+    signInWithEmail,
+    signUpWithEmail,
     signInWithGoogle,
     linkGoogleAccount,
     unlinkGoogleAccount,
     signOut,
+    completeOnboarding,
+    checkOnboardingStatus,
     enableSync,
     disableSync,
     syncNow,
     getSyncStatus,
     onSyncStatusChange,
+    checkAuthHealth,
+    conflicts,
+    conflictCount,
+    clearConflicts,
+    resolveConflicts,
   };
 
   return (
