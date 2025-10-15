@@ -232,11 +232,15 @@ export const ConflictResolutionModal: React.FC<ConflictResolutionModalProps> = (
         {/* Footer Actions */}
         <View style={styles.footer}>
           <TouchableOpacity 
-            style={styles.cancelButton}
-            onPress={handleCancel}
+            style={styles.dismissButton}
+            onPress={() => {
+              clearConflicts();
+              onClose();
+            }}
             disabled={isResolving}
           >
-            <Text style={styles.cancelButtonText}>Cancel</Text>
+            <MaterialCommunityIcons name="close-circle-outline" size={20} color="#666" />
+            <Text style={styles.dismissButtonText}>Dismiss All</Text>
           </TouchableOpacity>
 
           <TouchableOpacity 
@@ -249,7 +253,7 @@ export const ConflictResolutionModal: React.FC<ConflictResolutionModalProps> = (
             ) : (
               <>
                 <MaterialCommunityIcons name="check-circle" size={20} color="white" />
-                <Text style={styles.resolveButtonText}>Resolve All Conflicts</Text>
+                <Text style={styles.resolveButtonText}>Resolve All</Text>
               </>
             )}
           </TouchableOpacity>
@@ -392,15 +396,20 @@ const styles = StyleSheet.create({
     borderTopColor: '#E0E0E0',
     gap: 12,
   },
-  cancelButton: {
+  dismissButton: {
     flex: 1,
-    backgroundColor: '#E0E0E0',
+    backgroundColor: '#F5F5F5',
     borderRadius: 8,
     padding: 16,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
-  cancelButtonText: {
-    fontSize: 16,
+  dismissButtonText: {
+    fontSize: 14,
     fontWeight: '600',
     color: '#666',
   },

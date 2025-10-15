@@ -30,9 +30,10 @@ type BooksNavigationProp = StackNavigationProp<RootStackParamList>;
 
 const BooksScreen: React.FC = () => {
   const navigation = useNavigation<BooksNavigationProp>();
-  const { user } = useAuth();
+  const { user, syncNow } = useAuth();
   const [books, setBooks] = useState<Book[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [entryCounts, setEntryCounts] = useState<{ [bookId: string]: number }>({});
   const theme = useTheme();
 
@@ -86,6 +87,25 @@ const BooksScreen: React.FC = () => {
       ]
     );
   }, [entryCounts, loadBooks]);
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      console.log('🔄 Pull-to-refresh: Syncing with Firebase...');
+      const syncResult = await syncNow();
+      if (syncResult.success) {
+        console.log('✅ Pull-to-refresh: Sync successful');
+      } else {
+        console.warn('⚠️ Pull-to-refresh: Sync failed -', syncResult.message);
+      }
+      await loadBooks();
+    } catch (error) {
+      console.error('❌ Pull-to-refresh: Error -', error);
+      await loadBooks(); // Still reload on error
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [loadBooks, syncNow]);
 
   const navigateToBook = useCallback((book: Book) => {
     navigation.navigate('BookDetail', { 
@@ -172,8 +192,8 @@ const BooksScreen: React.FC = () => {
         ListHeaderComponent={renderHeader}
         ListEmptyComponent={!isLoading ? renderEmptyState : null}
         ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
-        refreshing={isLoading}
-        onRefresh={loadBooks}
+        refreshing={isRefreshing}
+        onRefresh={handleRefresh}
         windowSize={10}
         initialNumToRender={7}
         maxToRenderPerBatch={5}

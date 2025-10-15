@@ -50,7 +50,7 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
   const { bookId, bookName } = route.params;
   const navigation = useNavigation<BookDetailNavigationProp>();
   const theme = useTheme();
-  const { user } = useAuth();
+  const { user, syncNow } = useAuth();
 
   const [entries, setEntries] = useState<Entry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -171,10 +171,27 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
     }, [loadEntries])
   );
 
-  const handleRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    loadEntries();
-  }, [loadEntries]);
+    try {
+      // Sync with Firebase first to get latest data
+      console.log('🔄 Pull-to-refresh: Syncing with Firebase...');
+      const syncResult = await syncNow();
+      if (syncResult.success) {
+        console.log('✅ Pull-to-refresh: Sync successful');
+      } else {
+        console.warn('⚠️ Pull-to-refresh: Sync failed -', syncResult.message);
+      }
+      // Then reload entries (from local storage with fresh synced data)
+      await loadEntries();
+    } catch (error) {
+      console.error('❌ Pull-to-refresh: Error -', error);
+      // Still reload local data even if sync fails
+      await loadEntries();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [loadEntries, syncNow]);
 
   const handleEditEntry = useCallback((entryId: string) => {
     console.log('BookDetail: Navigating to edit entry with ID:', entryId);

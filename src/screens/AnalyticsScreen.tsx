@@ -46,7 +46,7 @@ const { width: screenWidth } = Dimensions.get('window');
 
 const AnalyticsScreen: React.FC = () => {
   const theme = useTheme();
-  const { user } = useAuth();
+  const { user, syncNow } = useAuth();
 
   const [allEntries, setAllEntries] = useState<Entry[]>([]);
   const [selectedBook, setSelectedBook] = useState<string>('all');
@@ -150,10 +150,27 @@ const AnalyticsScreen: React.FC = () => {
     }, [user, loadAnalyticsData])
   );
 
-  const handleRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    loadAnalyticsData();
-  }, [loadAnalyticsData]);
+    try {
+      // Sync with Firebase first to get latest data
+      console.log('🔄 Pull-to-refresh: Syncing with Firebase...');
+      const syncResult = await syncNow();
+      if (syncResult.success) {
+        console.log('✅ Pull-to-refresh: Sync successful');
+      } else {
+        console.warn('⚠️ Pull-to-refresh: Sync failed -', syncResult.message);
+      }
+      // Then reload analytics data (from local storage with fresh synced data)
+      await loadAnalyticsData();
+    } catch (error) {
+      console.error('❌ Pull-to-refresh: Error -', error);
+      // Still reload local data even if sync fails
+      await loadAnalyticsData();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [loadAnalyticsData, syncNow]);
 
   const getFilteredEntries = useCallback((entries: Entry[], bookId: string): Entry[] => {
     if (bookId === 'all') {
@@ -186,6 +203,25 @@ const AnalyticsScreen: React.FC = () => {
 
   const renderInsightsCard = useCallback(() => {
     if (!insights) return null;
+
+    // Show empty state if no entries (check insights totals)
+    if (insights.totalIncome === 0 && insights.totalExpenses === 0) {
+      return (
+        <Card style={[styles.insightsCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
+          <Card.Content>
+            <View style={styles.emptyStateContainer}>
+              <MaterialIcons name="info-outline" size={64} color={theme.colors.onSurfaceVariant} />
+              <Text style={[styles.emptyStateTitle, { color: theme.colors.onSurface }]}>
+                No Transactions Yet
+              </Text>
+              <Text style={[styles.emptyStateText, { color: theme.colors.onSurfaceVariant }]}>
+                Add some entries to see your financial analytics
+              </Text>
+            </View>
+          </Card.Content>
+        </Card>
+      );
+    }
 
     return (
       <Card style={[styles.insightsCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
@@ -319,6 +355,31 @@ const AnalyticsScreen: React.FC = () => {
     );
   }, [books, selectedBook, theme]);
 
+  // Show loading indicator on first load
+  if (isLoading && allEntries.length === 0) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <SyncStatusBanner />
+        <Surface style={[styles.header, { backgroundColor: theme.colors.primary }]} elevation={2}>
+          <Title style={[styles.headerTitle, { color: theme.colors.onPrimary }]}>
+            Financial Analytics
+          </Title>
+        </Surface>
+        <View style={styles.loadingContainer}>
+          <Surface style={[styles.loadingCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
+            <MaterialIcons name="analytics" size={64} color={theme.colors.primary} />
+            <Text style={[styles.loadingText, { color: theme.colors.onSurface }]}>
+              Loading analytics data...
+            </Text>
+            <Text style={[styles.loadingSubtext, { color: theme.colors.onSurfaceVariant }]}>
+              Processing your financial data
+            </Text>
+          </Surface>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       {/* Sync Status Banner */}
@@ -366,44 +427,48 @@ const AnalyticsScreen: React.FC = () => {
             </Card.Content>
           </Card>
 
-          {/* Trend Charts */}
-          <TrendChart
-            title={`${timeframe === 'monthly' ? 'Monthly' : 'Weekly'} Income vs Expenses`}
-            subtitle="Track your financial flow over time"
-            data={trendData}
-            showIncome={true}
-            showExpense={true}
-          />
+          {/* Trend Charts - Only show if there's data */}
+          {filteredEntries.length > 0 && (
+            <>
+              <TrendChart
+                title={`${timeframe === 'monthly' ? 'Monthly' : 'Weekly'} Income vs Expenses`}
+                subtitle="Track your financial flow over time"
+                data={trendData}
+                showIncome={true}
+                showExpense={true}
+              />
 
-          <BarChart
-            title={`${timeframe === 'monthly' ? 'Monthly' : 'Weekly'} Net Balance`}
-            subtitle="Your savings or deficit by period"
-            data={trendData}
-            dataKey="balance"
-            color={theme.colors.tertiary}
-          />
+              <BarChart
+                title={`${timeframe === 'monthly' ? 'Monthly' : 'Weekly'} Net Balance`}
+                subtitle="Your savings or deficit by period"
+                data={trendData}
+                dataKey="balance"
+                color={theme.colors.tertiary}
+              />
 
-          {/* Category Breakdown */}
-          <CategoryChart
-            title="Expense Categories"
-            subtitle="Where your money is going"
-            data={categoryData}
-            showPercentages={true}
-          />
+              {/* Category Breakdown */}
+              <CategoryChart
+                title="Expense Categories"
+                subtitle="Where your money is going"
+                data={categoryData}
+                showPercentages={true}
+              />
 
-          {/* Expense Breakdown Bar Chart */}
-          <BarChart
-            title="Category Spending"
-            subtitle="Compare spending across categories"
-            data={categoryData.slice(0, 6).map(cat => ({
-              date: cat.category,
-              income: 0,
-              expense: cat.amount,
-              balance: 0
-            }))}
-            dataKey="expense"
-            color={theme.colors.error}
-          />
+              {/* Expense Breakdown Bar Chart */}
+              <BarChart
+                title="Category Spending"
+                subtitle="Compare spending across categories"
+                data={categoryData.slice(0, 6).map(cat => ({
+                  date: cat.category,
+                  income: 0,
+                  expense: cat.amount,
+                  balance: 0
+                }))}
+                dataKey="expense"
+                color={theme.colors.error}
+              />
+            </>
+          )}
         </View>
       </ScrollView>
     </View>
@@ -465,11 +530,13 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'space-between',
     marginBottom: spacing.lg,
+    gap: spacing.sm, // Add gap for better spacing
   },
   insightItem: {
-    width: '48%',
+    width: '47%', // Changed from 48% to 47% for better fit
     alignItems: 'center',
     marginBottom: spacing.md,
+    padding: spacing.xs, // Add padding inside each item
   },
   insightIcon: {
     width: 48,
@@ -512,6 +579,44 @@ const styles = StyleSheet.create({
   timeframeCard: {
     marginBottom: spacing.lg,
     borderRadius: borderRadius.md,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  loadingCard: {
+    padding: spacing.xl,
+    borderRadius: borderRadius.lg,
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  loadingText: {
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: spacing.md,
+  },
+  loadingSubtext: {
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  emptyStateContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xl,
+    gap: spacing.md,
+  },
+  emptyStateTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: spacing.md,
+  },
+  emptyStateText: {
+    fontSize: 14,
+    textAlign: 'center',
   },
 });
 

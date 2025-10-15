@@ -37,7 +37,7 @@ type DashboardNavigationProp = StackNavigationProp<RootStackParamList>;
 
 const DashboardScreen: React.FC = () => {
   const navigation = useNavigation<DashboardNavigationProp>();
-  const { user } = useAuth();
+  const { user, syncNow } = useAuth();
   const [books, setBooks] = useState<Book[]>([]);
   const [bookSummaries, setBookSummaries] = useState<BookSummary[]>([]);
   const [totalBalance, setTotalBalance] = useState(0);
@@ -147,9 +147,25 @@ const DashboardScreen: React.FC = () => {
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    await loadDashboardData();
-    setIsRefreshing(false);
-  }, [loadDashboardData]);
+    try {
+      // Sync with Firebase first to get latest data
+      console.log('🔄 Pull-to-refresh: Syncing with Firebase...');
+      const syncResult = await syncNow();
+      if (syncResult.success) {
+        console.log('✅ Pull-to-refresh: Sync successful');
+      } else {
+        console.warn('⚠️ Pull-to-refresh: Sync failed -', syncResult.message);
+      }
+      // Then reload dashboard data (from local storage with fresh synced data)
+      await loadDashboardData();
+    } catch (error) {
+      console.error('❌ Pull-to-refresh: Error -', error);
+      // Still reload local data even if sync fails
+      await loadDashboardData();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [loadDashboardData, syncNow]);
 
   const navigateToBook = useCallback((book: Book) => {
     navigation.navigate('BookDetail', { 

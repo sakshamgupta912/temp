@@ -155,6 +155,36 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     return unsubscribe;
   }, [isInitialLoad]);
 
+  // Automatic token refresh every 50 minutes (before 1-hour expiry)
+  // This prevents "Missing or insufficient permissions" errors
+  useEffect(() => {
+    if (!user || !auth.currentUser) return;
+
+    console.log('⏰ Starting automatic token refresh (every 50 minutes)');
+
+    const refreshInterval = setInterval(async () => {
+      try {
+        console.log('🔄 Auto-refreshing Firebase auth token...');
+        await auth.currentUser?.getIdToken(true); // Force token refresh
+        console.log('✅ Token refreshed successfully');
+      } catch (error: any) {
+        console.error('❌ Token refresh failed:', error.message);
+        
+        // If token refresh fails, user needs to re-authenticate
+        if (error.code === 'auth/user-token-expired' || 
+            error.code === 'auth/invalid-user-token') {
+          console.error('🔐 Token expired - user needs to sign in again');
+          await signOut();
+        }
+      }
+    }, 50 * 60 * 1000); // 50 minutes in milliseconds
+
+    return () => {
+      console.log('⏰ Stopping automatic token refresh');
+      clearInterval(refreshInterval);
+    };
+  }, [user]);
+
   // Handle Google authentication response
   useEffect(() => {
     if (response) {
@@ -527,8 +557,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
    * Converts Date objects to ISO strings for Firestore compatibility
    */
   const sanitizeDataForFirestore = (data: any): any => {
-    if (data === null || data === undefined) {
-      return data;
+    // Firestore doesn't accept undefined - convert to null or skip
+    if (data === undefined) {
+      return null; // Convert undefined to null for Firestore
+    }
+    
+    if (data === null) {
+      return null;
     }
     
     // Handle Date objects
@@ -555,7 +590,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     if (typeof data === 'object') {
       const sanitized: any = {};
       for (const key in data) {
-        sanitized[key] = sanitizeDataForFirestore(data[key]);
+        const value = sanitizeDataForFirestore(data[key]);
+        // Skip undefined values in objects (Firestore doesn't accept them)
+        if (value !== undefined) {
+          sanitized[key] = value;
+        }
       }
       return sanitized;
     }
@@ -574,19 +613,24 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     const allEntries = await asyncStorageService.getAllEntries(userId);
 
     console.log('📝 Raw data before sanitization:', {
+      booksCount: books.length,
       entriesCount: allEntries.length,
+      categoriesCount: categories.length,
+      sampleBook: books[0] ? {
+        id: books[0].id,
+        name: books[0].name,
+        currency: books[0].currency,
+        hasUndefined: Object.entries(books[0]).filter(([k, v]) => v === undefined).map(([k]) => k)
+      } : 'no books',
       sampleEntry: allEntries[0] ? {
         id: allEntries[0].id,
         date: allEntries[0].date,
         dateType: typeof allEntries[0].date,
-        dateInstanceOf: allEntries[0].date instanceof Date,
-        createdAt: allEntries[0].createdAt,
-        createdAtType: typeof allEntries[0].createdAt,
-        createdAtInstanceOf: allEntries[0].createdAt instanceof Date,
+        hasUndefined: Object.entries(allEntries[0]).filter(([k, v]) => v === undefined).map(([k]) => k)
       } : 'no entries'
     });
 
-    // Sanitize data: Convert Date objects to ISO strings
+    // Sanitize data: Convert Date objects to ISO strings, remove undefined
     const sanitizedBooks = sanitizeDataForFirestore(books);
     const sanitizedEntries = sanitizeDataForFirestore(allEntries);
     const sanitizedCategories = sanitizeDataForFirestore(categories);
@@ -595,12 +639,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       booksCount: sanitizedBooks.length,
       entriesCount: sanitizedEntries.length,
       categoriesCount: sanitizedCategories.length,
+      sampleBook: sanitizedBooks[0] ? {
+        id: sanitizedBooks[0].id,
+        name: sanitizedBooks[0].name,
+        currency: sanitizedBooks[0].currency,
+        keys: Object.keys(sanitizedBooks[0]).length
+      } : 'no books',
       sampleEntry: sanitizedEntries[0] ? {
         id: sanitizedEntries[0].id,
         date: sanitizedEntries[0].date,
-        createdAt: sanitizedEntries[0].createdAt,
         dateType: typeof sanitizedEntries[0].date,
-        createdAtType: typeof sanitizedEntries[0].createdAt
+        keys: Object.keys(sanitizedEntries[0]).length
       } : 'no entries'
     });
 
@@ -1202,12 +1251,97 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             categories: cloudCategories.length 
           });
 
-          console.log('💾 Step 2: Replacing local data with cloud data...');
-          await saveDownloadedDataToLocal(user.id, cloudBooks, cloudEntries, cloudCategories);
+          console.log('� Step 2: Getting local data for merge...');
+          // CRITICAL: Use getAllX() methods to include deleted items (tombstones)
+          // Without tombstones, merge can't detect local deletions!
+          const localBooks = await asyncStorageService.getAllBooks(user.id);
+          const localCategories = await asyncStorageService.getAllCategories(user.id);
+          const localEntries = await asyncStorageService.getAllEntries(user.id);
 
-          console.log('✅ Cloud-first sync complete - Local data replaced with cloud data');
+          console.log('📱 Local data:', { 
+            books: localBooks.length, 
+            entries: localEntries.length, 
+            categories: localCategories.length,
+            deletedBooks: localBooks.filter((b: any) => b.deleted).length,
+            deletedEntries: localEntries.filter((e: any) => e.deleted).length,
+            deletedCategories: localCategories.filter((c: any) => c.deleted).length
+          });
+
+          console.log('🔀 Step 3: MERGE - Three-way merge (like Git merge)...');
+          const { GitStyleSyncService } = await import('../services/gitStyleSync');
+          
+          const booksResult = GitStyleSyncService.mergeArrays(localBooks, cloudBooks, 'book');
+          const entriesResult = GitStyleSyncService.mergeArrays(localEntries, cloudEntries, 'entry');
+          const categoriesResult = GitStyleSyncService.mergeArrays(localCategories, cloudCategories, 'category');
+
+          let allConflicts = [
+            ...booksResult.conflicts,
+            ...entriesResult.conflicts,
+            ...categoriesResult.conflicts
+          ];
+
+          console.log('🔀 Merge complete:', {
+            books: booksResult.merged.length,
+            entries: entriesResult.merged.length,
+            categories: categoriesResult.merged.length,
+            conflicts: allConflicts.length
+          });
+
+          // Filter out false conflicts (where values are actually the same but detected as different due to object comparison)
+          // This can happen with Date objects or when values are serialized differently
+          const realConflicts = allConflicts.filter(conflict => {
+            const localStr = JSON.stringify(conflict.localValue);
+            const cloudStr = JSON.stringify(conflict.cloudValue);
+            const isDifferent = localStr !== cloudStr;
+            
+            if (!isDifferent) {
+              console.log(`   ℹ️ Ignoring false conflict on ${conflict.entityType} ${conflict.field} (values are actually the same)`);
+            }
+            
+            return isDifferent;
+          });
+
+          if (realConflicts.length > 0) {
+            console.warn(`⚠️ CONFLICTS DETECTED: ${realConflicts.length} conflicts found!`);
+            realConflicts.forEach((conflict, idx) => {
+              console.warn(`  Conflict ${idx + 1}: ${conflict.entityType} ${conflict.entityId}.${conflict.field}`);
+              console.warn(`    Local: ${JSON.stringify(conflict.localValue)}`);
+              console.warn(`    Cloud: ${JSON.stringify(conflict.cloudValue)}`);
+            });
+            
+            // Store conflicts for UI to display
+            setConflicts(realConflicts);
+            setConflictCount(realConflicts.length);
+            
+            console.warn('⚠️ Using cloud values for conflicts by default (can be changed in settings)');
+            // Merged data already has cloud values for conflicts, so we can proceed
+          } else {
+            console.log('✅ No conflicts - clean merge!');
+            setConflicts([]);
+            setConflictCount(0);
+          }
+
+          console.log('💾 Step 4: Saving merged data locally...');
+          await saveDownloadedDataToLocal(user.id, booksResult.merged, entriesResult.merged, categoriesResult.merged);
+
+          console.log('📤 Step 5: PUSH - Uploading merged data to cloud...');
+          // Mark that we're uploading to prevent listener from triggering
+          justUploadedRef.current = true;
+          
+          // Upload the merged data (it will read from local storage which we just updated)
+          await syncLocalDataToFirestore(user.id);
+
+          console.log('✅ Git-style sync complete - Data merged and synced across devices!');
           setLastSyncTime(new Date());
-          return { success: true, message: 'Sync complete' };
+          
+          if (allConflicts.length > 0) {
+            return { 
+              success: true, 
+              message: `Sync complete with ${allConflicts.length} conflicts (using cloud values)`
+            };
+          } else {
+            return { success: true, message: 'Sync complete' };
+          }
 
         } catch (error: any) {
           lastError = error;

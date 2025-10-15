@@ -36,6 +36,57 @@ export interface SyncResult {
 export type ConflictResolution = 'use-local' | 'use-cloud' | 'manual';
 
 /**
+ * Helper: Deep comparison of values (handles Dates, objects, primitives)
+ */
+function areValuesEqual(value1: any, value2: any): boolean {
+  // Handle null/undefined
+  if (value1 === value2) return true;
+  if (value1 == null || value2 == null) return false;
+  
+  // Handle Date objects
+  if (value1 instanceof Date && value2 instanceof Date) {
+    return value1.getTime() === value2.getTime();
+  }
+  
+  // Handle string dates (ISO format)
+  if (typeof value1 === 'string' && typeof value2 === 'string') {
+    // Try parsing as dates
+    const date1 = new Date(value1);
+    const date2 = new Date(value2);
+    if (!isNaN(date1.getTime()) && !isNaN(date2.getTime())) {
+      return date1.getTime() === date2.getTime();
+    }
+  }
+  
+  // Handle arrays
+  if (Array.isArray(value1) && Array.isArray(value2)) {
+    if (value1.length !== value2.length) return false;
+    return value1.every((item, index) => areValuesEqual(item, value2[index]));
+  }
+  
+  // Handle objects
+  if (typeof value1 === 'object' && typeof value2 === 'object') {
+    const keys1 = Object.keys(value1);
+    const keys2 = Object.keys(value2);
+    if (keys1.length !== keys2.length) return false;
+    return keys1.every(key => areValuesEqual(value1[key], value2[key]));
+  }
+  
+  // Primitive comparison
+  return value1 === value2;
+}
+
+/**
+ * Helper: Format value for logging
+ */
+function formatValueForLog(value: any): string {
+  if (value === null || value === undefined) return String(value);
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+/**
  * Git-Style Three-Way Merge
  * 
  * Compares three versions:
@@ -64,126 +115,200 @@ export class GitStyleSyncService {
     const conflicts: SyncConflict[] = [];
     const merged = { ...cloud }; // Start with cloud as base
     
-    // Get base version (last synced version)
-    const baseVersion = local.lastSyncedVersion || 0;
+    // Get versions
     const localVersion = local.version;
     const cloudVersion = cloud.version;
     
+    // Base version: Use lastSyncedVersion if available, otherwise version
+    // This represents the "common ancestor" in Git terms
+    const localBaseVersion = local.lastSyncedVersion || 0;
+    const cloudBaseVersion = cloud.lastSyncedVersion || 0;
+    const baseVersion = Math.max(localBaseVersion, cloudBaseVersion);
+    
     console.log(`🔀 Three-way merge for ${entityType} ${local.id}:`);
-    console.log(`   Base version: ${baseVersion}, Local: ${localVersion}, Cloud: ${cloudVersion}`);
+    console.log(`   Base: ${baseVersion}, Local: v${localVersion} (base: ${localBaseVersion}), Cloud: v${cloudVersion} (base: ${cloudBaseVersion})`);
     
     // DELETION CONFLICT DETECTION
-    // Check if one side deleted while the other edited
     const localDeleted = local.deleted === true;
     const cloudDeleted = cloud.deleted === true;
     
     if (localDeleted && cloudDeleted) {
-      // Both sides deleted - no conflict, item is deleted
-      console.log('   🗑️ Both sides deleted - item is deleted');
-      return { merged: local, conflicts: [] };
+      // Both sides deleted - no conflict
+      console.log('   🗑️ Both deleted - using deletion');
+      return { 
+        merged: { 
+          ...local, 
+          version: Math.max(localVersion, cloudVersion) + 1,
+          lastSyncedVersion: cloudVersion 
+        }, 
+        conflicts: [] 
+      };
     }
     
-    if (localDeleted && !cloudDeleted && cloudVersion > baseVersion) {
-      // CONFLICT: Local deleted, but cloud edited
-      console.log('   ⚠️ DELETE-EDIT CONFLICT: Local deleted, cloud edited');
-      conflicts.push({
-        entityType,
-        entityId: local.id,
-        field: 'deleted',
-        baseValue: false,
-        localValue: 'DELETED',
-        cloudValue: 'EDITED',
-        localVersion,
-        cloudVersion
-      });
-      // Default: Keep deletion (can be overridden by user)
-      return { merged: { ...local, version: Math.max(localVersion, cloudVersion) + 1 }, conflicts };
+    if (localDeleted && !cloudDeleted) {
+      if (cloudVersion > localBaseVersion) {
+        // CONFLICT: Local deleted, but cloud edited since we last synced
+        console.log('   ⚠️ DELETE-EDIT CONFLICT: Local deleted, cloud edited');
+        conflicts.push({
+          entityType,
+          entityId: local.id,
+          field: 'deleted',
+          baseValue: false,
+          localValue: 'DELETED',
+          cloudValue: 'EDITED',
+          localVersion,
+          cloudVersion
+        });
+        // Default: Keep deletion
+        return { 
+          merged: { 
+            ...local, 
+            version: Math.max(localVersion, cloudVersion) + 1,
+            lastSyncedVersion: cloudVersion 
+          }, 
+          conflicts 
+        };
+      } else {
+        // No conflict: Local deleted, cloud unchanged
+        console.log('   🗑️ Local deleted, cloud unchanged - using deletion');
+        return { 
+          merged: { 
+            ...local, 
+            version: Math.max(localVersion, cloudVersion) + 1,
+            lastSyncedVersion: cloudVersion 
+          }, 
+          conflicts: [] 
+        };
+      }
     }
     
-    if (!localDeleted && cloudDeleted && localVersion > baseVersion) {
-      // CONFLICT: Cloud deleted, but local edited
-      console.log('   ⚠️ EDIT-DELETE CONFLICT: Cloud deleted, local edited');
-      conflicts.push({
-        entityType,
-        entityId: local.id,
-        field: 'deleted',
-        baseValue: false,
-        localValue: 'EDITED',
-        cloudValue: 'DELETED',
-        localVersion,
-        cloudVersion
-      });
-      // Default: Keep deletion (can be overridden by user)
-      return { merged: { ...cloud, version: Math.max(localVersion, cloudVersion) + 1 }, conflicts };
+    if (!localDeleted && cloudDeleted) {
+      if (localVersion > cloudBaseVersion) {
+        // CONFLICT: Cloud deleted, but local edited since cloud last synced
+        console.log('   ⚠️ EDIT-DELETE CONFLICT: Cloud deleted, local edited');
+        conflicts.push({
+          entityType,
+          entityId: local.id,
+          field: 'deleted',
+          baseValue: false,
+          localValue: 'EDITED',
+          cloudValue: 'DELETED',
+          localVersion,
+          cloudVersion
+        });
+        // Default: Keep deletion
+        return { 
+          merged: { 
+            ...cloud, 
+            version: Math.max(localVersion, cloudVersion) + 1,
+            lastSyncedVersion: cloudVersion 
+          }, 
+          conflicts 
+        };
+      } else {
+        // No conflict: Cloud deleted, local unchanged
+        console.log('   🗑️ Cloud deleted, local unchanged - using deletion');
+        return { 
+          merged: { 
+            ...cloud, 
+            version: Math.max(localVersion, cloudVersion) + 1,
+            lastSyncedVersion: cloudVersion 
+          }, 
+          conflicts: [] 
+        };
+      }
     }
     
-    if (localDeleted && !cloudDeleted && cloudVersion === baseVersion) {
-      // No conflict: Local deleted, cloud unchanged - deletion wins
-      console.log('   🗑️ Local deleted, cloud unchanged - using deletion');
-      return { merged: local, conflicts: [] };
-    }
+    // Determine if changes were made
+    const localChanged = localVersion > localBaseVersion;
+    const cloudChanged = cloudVersion > cloudBaseVersion;
     
-    if (!localDeleted && cloudDeleted && localVersion === baseVersion) {
-      // No conflict: Cloud deleted, local unchanged - deletion wins
-      console.log('   🗑️ Cloud deleted, local unchanged - using deletion');
-      return { merged: cloud, conflicts: [] };
-    }
-    
-    // Fast-forward scenarios (no conflicts, no deletions)
-    if (localVersion === cloudVersion) {
-      // Both at same version - no changes on either side
+    // Fast-forward scenarios
+    if (!localChanged && !cloudChanged) {
+      // Neither changed
       console.log('   ✅ No changes on either side');
-      return { merged: local, conflicts: [] };
+      return { 
+        merged: { 
+          ...local, 
+          lastSyncedVersion: cloudVersion 
+        }, 
+        conflicts: [] 
+      };
     }
     
-    if (localVersion === baseVersion) {
-      // Only cloud changed - fast-forward to cloud (like git pull)
-      console.log('   ⬇️ Only cloud changed - using cloud version (fast-forward)');
-      return { merged: { ...cloud, lastSyncedVersion: cloudVersion }, conflicts: [] };
+    if (!localChanged && cloudChanged) {
+      // Only cloud changed - fast-forward to cloud
+      console.log('   ⬇️ Only cloud changed - fast-forward to cloud');
+      return { 
+        merged: { 
+          ...cloud, 
+          lastSyncedVersion: cloudVersion 
+        }, 
+        conflicts: [] 
+      };
     }
     
-    if (cloudVersion === baseVersion) {
-      // Only local changed - fast-forward to local (like git push)
-      console.log('   ⬆️ Only local changed - using local version (fast-forward)');
-      return { merged: { ...local, lastSyncedVersion: cloudVersion }, conflicts: [] };
+    if (localChanged && !cloudChanged) {
+      // Only local changed - keep local, will push to cloud
+      console.log('   ⬆️ Only local changed - keeping local (will push)');
+      return { 
+        merged: { 
+          ...local, 
+          lastSyncedVersion: cloudVersion 
+        }, 
+        conflicts: [] 
+      };
     }
     
     // Both changed - need field-level comparison
-    console.log('   ⚠️ Both sides changed - checking for conflicts...');
+    console.log('   ⚠️ Both sides changed - checking fields for conflicts...');
     
-    // Fields to check for conflicts (customize per entity type)
+    // Fields to check for conflicts
     const fieldsToCheck = getFieldsToCheck(entityType);
     
+    // Field-level conflict detection
     for (const field of fieldsToCheck) {
-      const localChanged = local[field] !== (local as any)[`_base_${field}`];
-      const cloudChanged = cloud[field] !== (local as any)[`_base_${field}`];
+      const localValue = local[field];
+      const cloudValue = cloud[field];
       
-      // For now, we'll use a simpler check: if values differ, it's a conflict
-      if (local[field] !== cloud[field]) {
-        console.log(`   ⚠️ CONFLICT on field "${field}": local="${local[field]}" vs cloud="${cloud[field]}"`);
+      // Deep comparison for values (handles Dates, objects, primitives)
+      const valuesAreDifferent = !areValuesEqual(localValue, cloudValue);
+      
+      if (valuesAreDifferent) {
+        // Values differ - this is a conflict
+        console.log(`   ⚠️ CONFLICT on "${field}": local="${formatValueForLog(localValue)}" vs cloud="${formatValueForLog(cloudValue)}"`);
         
         conflicts.push({
           entityType,
           entityId: local.id,
           field,
-          baseValue: (local as any)[`_base_${field}`] || null,
-          localValue: local[field],
-          cloudValue: cloud[field],
+          baseValue: null, // We don't track base values per field currently
+          localValue,
+          cloudValue,
           localVersion,
           cloudVersion
         });
         
-        // Default: Keep cloud value (can be overridden by user)
-        (merged as any)[field] = (cloud as any)[field];
+        // Default resolution: Use cloud value (can be overridden)
+        (merged as any)[field] = cloudValue;
       } else {
-        // No conflict - use local value (both changed to same value, or only one changed)
-        (merged as any)[field] = (local as any)[field];
+        // Values match - use either (both same)
+        (merged as any)[field] = localValue;
       }
     }
     
     // Update version metadata
-    (merged as any).version = Math.max(localVersion, cloudVersion) + (conflicts.length > 0 ? 1 : 0);
+    // ALWAYS increment version after merge to indicate merge happened
+    const newVersion = Math.max(localVersion, cloudVersion) + 1;
+    (merged as any).version = newVersion;
     (merged as any).lastSyncedVersion = cloudVersion;
+    (merged as any).updatedAt = new Date();
+    
+    if (conflicts.length > 0) {
+      console.log(`   ⚠️ ${conflicts.length} conflicts detected - using cloud values by default`);
+    } else {
+      console.log(`   ✅ Auto-merged - no conflicts`);
+    }
     
     return { merged, conflicts };
   }
@@ -232,12 +357,14 @@ export class GitStyleSyncService {
       }
     }
     
-    // Filter out deleted items (tombstones)
-    const filteredMerged = merged.filter(item => !item.deleted);
+    // Keep deleted items (tombstones) so they can be synced to cloud
+    // Other devices need to know about deletions!
+    // Filtering deleted items happens when displaying to users, not during sync
+    const deletedCount = merged.filter(item => item.deleted).length;
     
-    console.log(`✅ Merge complete: ${filteredMerged.length} items, ${allConflicts.length} conflicts`);
+    console.log(`✅ Merge complete: ${merged.length} items (${deletedCount} deleted tombstones), ${allConflicts.length} conflicts`);
     
-    return { merged: filteredMerged, conflicts: allConflicts };
+    return { merged, conflicts: allConflicts };
   }
   
   /**

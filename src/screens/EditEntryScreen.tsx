@@ -54,11 +54,9 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingEntry, setIsLoadingEntry] = useState(true);
   
-  // Currency state
-  const [selectedCurrency, setSelectedCurrency] = useState('');
-  const [userDisplayCurrency, setUserDisplayCurrency] = useState('INR');
-  const [convertedAmount, setConvertedAmount] = useState('');
-  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
+  // NEW: Book and currency state (entries inherit book's currency - READ ONLY)
+  const [bookCurrency, setBookCurrency] = useState<string>('USD');
+  const [bookName, setBookName] = useState<string>('');
 
   // UI state
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -143,33 +141,23 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
     setPaymentMode(entry.paymentMode);
     setRemarks(entry.remarks || '');
     
-    // Initialize currency
+    // NEW: Load book details to get currency (read-only)
     try {
-      const displayCurr = await currencyUtils.getUserDefaultCurrency();
-      setUserDisplayCurrency(displayCurr);
-      setSelectedCurrency(displayCurr);
+      const books = await asyncStorageService.getBooks(user!.id);
+      const currentBook = books.find(b => b.id === entry.bookId);
+      
+      if (currentBook) {
+        setBookCurrency(currentBook.currency);
+        setBookName(currentBook.name);
+        console.log(`EditEntry: Book "${currentBook.name}" uses currency: ${currentBook.currency}`);
+      } else {
+        console.warn('EditEntry: Book not found, using entry currency:', entry.currency);
+        setBookCurrency(entry.currency || 'USD');
+      }
     } catch (error) {
-      console.error('Error initializing currency:', error);
-      setUserDisplayCurrency('INR');
-      setSelectedCurrency('INR');
+      console.error('Error loading book details:', error);
+      setBookCurrency(entry.currency || 'USD');
     }
-  };
-
-  // Update conversion preview when amount or currency changes
-  useEffect(() => {
-    updateConversionPreview();
-  }, [amount, selectedCurrency]);
-
-  // NOTE: Entry editing maintains the book's currency - no conversion needed
-  const updateConversionPreview = async () => {
-    // Conversion preview removed - entries use book's currency
-    setConvertedAmount('');
-    setExchangeRate(null);
-  };
-
-  const handleCurrencySelect = (currency: any) => {
-    setSelectedCurrency(currency.code);
-    console.log('EditEntry: Currency changed to:', currency.code);
   };
 
   // Categories are now handled by the CategoryPicker component
@@ -377,34 +365,21 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
               </HelperText>
             </View>
 
-            {/* Currency Selection */}
+            {/* Book Currency Info - Read-only display */}
             <View style={styles.section}>
-              <CurrencyPicker
-                selectedCurrency={selectedCurrency}
-                onCurrencySelect={handleCurrencySelect}
-                label="Currency"
-                showFlag={true}
-                style={styles.currencyPicker}
-              />
-              
-              {/* Conversion Preview */}
-              {selectedCurrency !== 'INR' && convertedAmount && (
-                <Surface style={styles.conversionPreview} elevation={1}>
-                  <View style={styles.conversionContent}>
-                    <Text variant="bodySmall" style={styles.conversionLabel}>
-                      Converted to INR:
-                    </Text>
-                    <Text variant="bodyLarge" style={styles.conversionAmount}>
-                      {currencyService.formatCurrency(parseFloat(convertedAmount), 'INR')}
-                    </Text>
-                    {exchangeRate && (
-                      <Text variant="bodySmall" style={styles.exchangeRate}>
-                        Rate: 1 {selectedCurrency} = {exchangeRate.toFixed(4)} INR
-                      </Text>
-                    )}
-                  </View>
-                </Surface>
-              )}
+              <Surface style={styles.currencyInfoCard} elevation={1}>
+                <View style={styles.currencyInfoContent}>
+                  <Text variant="bodySmall" style={styles.currencyInfoLabel}>
+                    Book Currency (Read-only)
+                  </Text>
+                  <Text variant="titleMedium" style={styles.currencyInfoValue}>
+                    {bookCurrency}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.currencyInfoHelper}>
+                    Entry currency cannot be changed - it matches the book's currency
+                  </Text>
+                </View>
+              </Surface>
             </View>
 
             {/* Date Picker */}
@@ -720,6 +695,33 @@ const styles = StyleSheet.create({
   exchangeRate: {
     opacity: 0.6,
     marginTop: spacing.xs,
+  },
+  // NEW: Book currency info card styles
+  currencyInfoCard: {
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: 'rgba(103, 58, 183, 0.08)', // Purple tint
+    borderWidth: 1,
+    borderColor: 'rgba(103, 58, 183, 0.2)',
+  },
+  currencyInfoContent: {
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  currencyInfoLabel: {
+    opacity: 0.7,
+    textAlign: 'center',
+  },
+  currencyInfoValue: {
+    fontWeight: 'bold',
+    color: '#673AB7', // Material purple
+    fontSize: 20,
+  },
+  currencyInfoHelper: {
+    opacity: 0.6,
+    textAlign: 'center',
+    marginTop: spacing.xs,
+    fontStyle: 'italic',
   },
 });
 

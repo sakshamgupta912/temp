@@ -31,13 +31,27 @@ export const TrendChart: React.FC<TrendChartProps> = memo(({
 }) => {
   const theme = useTheme();
 
+  // Helper function to convert hex color to rgba
+  const hexToRgba = (hex: string, opacity: number = 1) => {
+    // Remove # if present
+    const cleanHex = hex.replace('#', '');
+    
+    // Parse RGB values
+    const r = parseInt(cleanHex.substring(0, 2), 16);
+    const g = parseInt(cleanHex.substring(2, 4), 16);
+    const b = parseInt(cleanHex.substring(4, 6), 16);
+    
+    return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+  };
+
   // Memoize expensive data processing
   const chartData = useMemo(() => {
     if (data.length === 0) return null;
 
     // Prepare data for react-native-chart-kit
     const labels = data.map(item => {
-      const date = new Date(item.date);
+      // Handle both string and Date objects
+      const date = typeof item.date === 'string' ? new Date(item.date) : item.date;
       return `${date.getMonth() + 1}/${date.getDate()}`;
     });
 
@@ -46,7 +60,7 @@ export const TrendChart: React.FC<TrendChartProps> = memo(({
     if (showIncome) {
       datasets.push({
         data: data.map(item => item.income / 1000), // Convert to thousands
-        color: (opacity = 1) => `rgba(${theme.colors.primary.slice(1)}, ${opacity})`,
+        color: (opacity = 1) => hexToRgba(theme.colors.primary, opacity),
         strokeWidth: 3,
       });
     }
@@ -54,7 +68,7 @@ export const TrendChart: React.FC<TrendChartProps> = memo(({
     if (showExpense) {
       datasets.push({
         data: data.map(item => Math.abs(item.expense) / 1000), // Convert to thousands and make positive
-        color: (opacity = 1) => theme.colors.error + (opacity === 1 ? '' : Math.floor(opacity * 255).toString(16).padStart(2, '0')),
+        color: (opacity = 1) => hexToRgba(theme.colors.error, opacity),
         strokeWidth: 3,
       });
     }
@@ -66,8 +80,8 @@ export const TrendChart: React.FC<TrendChartProps> = memo(({
   const chartConfig = useMemo(() => ({
     backgroundGradientFrom: theme.colors.surface,
     backgroundGradientTo: theme.colors.surface,
-    color: (opacity = 1) => theme.colors.onSurface + Math.floor(opacity * 255).toString(16).padStart(2, '0'),
-    labelColor: (opacity = 1) => theme.colors.onSurfaceVariant + Math.floor(opacity * 255).toString(16).padStart(2, '0'),
+    color: (opacity = 1) => hexToRgba(theme.colors.onSurface, opacity),
+    labelColor: (opacity = 1) => hexToRgba(theme.colors.onSurfaceVariant, opacity),
     strokeWidth: 2,
     barPercentage: 0.5,
     useShadowColorFromDataset: false,
@@ -183,10 +197,19 @@ export const CategoryChart: React.FC<CategoryChartProps> = memo(({
     }));
   }, [data, theme.colors.onSurfaceVariant]);
 
+  // Helper function to convert hex color to rgba (reused from TrendChart)
+  const hexToRgba = (hex: string, opacity: number = 1) => {
+    const cleanHex = hex.replace('#', '');
+    const r = parseInt(cleanHex.substring(0, 2), 16);
+    const g = parseInt(cleanHex.substring(2, 4), 16);
+    const b = parseInt(cleanHex.substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+  };
+
   // Memoize chart config - MUST be before conditional return
   const chartConfig = useMemo(() => ({
-    color: (opacity = 1) => theme.colors.onSurface + Math.floor(opacity * 255).toString(16).padStart(2, '0'),
-    labelColor: (opacity = 1) => theme.colors.onSurfaceVariant + Math.floor(opacity * 255).toString(16).padStart(2, '0'),
+    color: (opacity = 1) => hexToRgba(theme.colors.onSurface, opacity),
+    labelColor: (opacity = 1) => hexToRgba(theme.colors.onSurfaceVariant, opacity),
     strokeWidth: 2,
     barPercentage: 0.5,
     useShadowColorFromDataset: false,
@@ -281,6 +304,15 @@ export const BarChart: React.FC<BarChartProps> = memo(({
 }) => {
   const theme = useTheme();
   
+  // Helper function to convert hex color to rgba
+  const hexToRgba = (hex: string, opacity: number = 1) => {
+    const cleanHex = hex.replace('#', '');
+    const r = parseInt(cleanHex.substring(0, 2), 16);
+    const g = parseInt(cleanHex.substring(2, 4), 16);
+    const b = parseInt(cleanHex.substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+  };
+  
   // Memoize color calculation
   const chartColor = useMemo(() => 
     color || (
@@ -294,7 +326,8 @@ export const BarChart: React.FC<BarChartProps> = memo(({
     if (data.length === 0) return null;
 
     const labels = data.map(item => {
-      const date = new Date(item.date);
+      // Handle both string and Date objects
+      const date = typeof item.date === 'string' ? new Date(item.date) : item.date;
       return `${date.getMonth() + 1}/${date.getDate()}`;
     });
 
@@ -312,8 +345,8 @@ export const BarChart: React.FC<BarChartProps> = memo(({
   const chartConfig = useMemo(() => ({
     backgroundGradientFrom: theme.colors.surface,
     backgroundGradientTo: theme.colors.surface,
-    color: (opacity = 1) => chartColor + Math.floor(opacity * 255).toString(16).padStart(2, '0'),
-    labelColor: (opacity = 1) => theme.colors.onSurfaceVariant + Math.floor(opacity * 255).toString(16).padStart(2, '0'),
+    color: (opacity = 1) => hexToRgba(chartColor, opacity),
+    labelColor: (opacity = 1) => hexToRgba(theme.colors.onSurfaceVariant, opacity),
     strokeWidth: 2,
     barPercentage: 0.7,
     useShadowColorFromDataset: false,

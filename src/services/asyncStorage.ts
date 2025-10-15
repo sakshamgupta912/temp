@@ -358,7 +358,8 @@ class AsyncStorageService {
               ...book, 
               deleted: true, 
               deletedAt: new Date(),
-              updatedAt: new Date() 
+              updatedAt: new Date(),
+              version: (book.version || 0) + 1  // ← INCREMENT VERSION so merge detects deletion as local change
             } 
           : book
       );
@@ -693,7 +694,8 @@ class AsyncStorageService {
               ...entry, 
               deleted: true, 
               deletedAt: new Date(),
-              updatedAt: new Date() 
+              updatedAt: new Date(),
+              version: (entry.version || 0) + 1  // ← INCREMENT VERSION so merge detects deletion as local change
             } 
           : entry
       );
@@ -976,7 +978,9 @@ class AsyncStorageService {
           ? { 
               ...cat, 
               deleted: true, 
-              deletedAt: new Date()
+              deletedAt: new Date(),
+              updatedAt: new Date(),
+              version: (cat.version || 0) + 1  // ← INCREMENT VERSION so merge detects deletion as local change
             } 
           : cat
       );
