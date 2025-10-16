@@ -232,6 +232,12 @@ export default function EditBookScreen() {
 
   // Handle update
   const handleUpdate = async () => {
+    // CRITICAL: Check if already loading (prevent double-submit race condition)
+    if (isLoading) {
+      console.log('⏭️ EditBook: Already processing, skipping duplicate submission');
+      return;
+    }
+    
     Keyboard.dismiss();
     
     if (!validateForm() || !originalBook) {

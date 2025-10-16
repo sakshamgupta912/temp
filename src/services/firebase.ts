@@ -1,9 +1,9 @@
 // Firebase configuration and initialization
 import { initializeApp } from 'firebase/app';
 import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
-import { initializeAuth, getReactNativePersistence, connectAuthEmulator } from 'firebase/auth';
+import { getAuth, connectAuthEmulator } from 'firebase/auth';
 import { getStorage, connectStorageEmulator } from 'firebase/storage';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// Note: Firebase v10+ uses getAuth() directly - persistence is handled automatically
 
 // ✅ UPDATED: Your actual Firebase project configuration
 //  Project: cocona-472b7
@@ -28,11 +28,10 @@ const firebaseConfig = {
 // Initialize Firebase app
 const app = initializeApp(firebaseConfig);
 
-// Initialize Firebase services with proper React Native persistence
-// CRITICAL: This ensures auth tokens persist across app restarts
-export const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(AsyncStorage)
-});
+// Initialize Firebase services
+// Note: Firebase v10+ handles React Native persistence automatically via AsyncStorage
+// when using getAuth(). No need to manually configure getReactNativePersistence.
+export const auth = getAuth(app);
 
 export const firestore = getFirestore(app);
 export const storage = getStorage(app);

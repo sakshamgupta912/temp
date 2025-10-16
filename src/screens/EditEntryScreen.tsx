@@ -53,6 +53,7 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
   const [remarks, setRemarks] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingEntry, setIsLoadingEntry] = useState(true);
+  const [categories, setCategories] = useState<Category[]>([]);
   
   // NEW: Book and currency state (entries inherit book's currency - READ ONLY)
   const [bookCurrency, setBookCurrency] = useState<string>('USD');
@@ -78,7 +79,10 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
   const loadData = async () => {
     try {
       setIsLoadingEntry(true);
-      await loadEntry();
+      await Promise.all([
+        loadEntry(),
+        loadCategories()
+      ]);
     } catch (error) {
       console.error('Error loading data:', error);
       Alert.alert('Error', 'Failed to load entry data');
@@ -86,6 +90,22 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
     } finally {
       setIsLoadingEntry(false);
     }
+  };
+
+  // Load categories for display
+  const loadCategories = async () => {
+    try {
+      const userCategories = await asyncStorageService.getCategories(user!.id);
+      setCategories(userCategories);
+    } catch (error) {
+      console.error('Error loading categories:', error);
+    }
+  };
+
+  // Helper to get category name from ID
+  const getCategoryName = (categoryId: string): string => {
+    const category = categories.find(c => c.id === categoryId);
+    return category?.name || 'Select Category';
   };
 
   const loadEntry = async () => {
@@ -183,6 +203,12 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
     // Dismiss keyboard first
     Keyboard.dismiss();
     
+    // CRITICAL: Check if already loading (prevent double-submit race condition)
+    if (isLoading) {
+      console.log('⏭️ EditEntry: Already processing, skipping duplicate submission');
+      return;
+    }
+    
     if (!validateForm() || !originalEntry) {
       return;
     }
@@ -245,6 +271,12 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
 
   const handleDelete = async () => {
     if (!originalEntry) return;
+    
+    // CRITICAL: Check if already loading (prevent double-delete race condition)
+    if (isLoading) {
+      console.log('⏭️ EditEntry: Already processing delete, skipping duplicate');
+      return;
+    }
 
     Alert.alert(
       'Delete Entry',
@@ -430,7 +462,7 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
                 contentStyle={styles.menuButtonContent}
                 icon="chevron-down"
               >
-                {selectedCategory || 'Select Category'}
+                {getCategoryName(selectedCategory)}
               </Button>
               <HelperText type="error" visible={!!errors.category}>
                 {errors.category}
@@ -514,7 +546,7 @@ const EditEntryScreen: React.FC<Props> = ({ route }) => {
                     {entryType === 'income' ? '+' : '-'}₹{amount}
                   </Chip>
                   <Text style={{ color: theme.colors.onSurface }}>
-                    {selectedCategory} • {date.toLocaleDateString()}
+                    {getCategoryName(selectedCategory)} • {date.toLocaleDateString()}
                   </Text>
                 </View>
               </Surface>

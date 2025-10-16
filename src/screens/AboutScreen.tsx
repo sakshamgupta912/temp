@@ -5,7 +5,8 @@ import {
   StyleSheet,
   ScrollView,
   Linking,
-  Alert
+  Alert,
+  Image
 } from 'react-native';
 import { 
   Card, 
@@ -31,11 +32,11 @@ const AboutScreen: React.FC = () => {
   const theme = useTheme();
 
   const appInfo = {
-    name: 'ExpenseBudgetApp',
+    name: 'Cocona',
     version: '1.0.0',
     buildNumber: '1',
-    releaseDate: 'September 2025',
-    developer: 'Your Development Team',
+    releaseDate: 'October 2025',
+    developer: 'Saksham Gupta',
     description: 'A comprehensive expense management app built with React Native'
   };
 
@@ -59,7 +60,7 @@ const AboutScreen: React.FC = () => {
       bug: 'Bug Report'
     };
     
-    const emailURL = `mailto:support@example.com?subject=${subjects[type]} - ${appInfo.name} v${appInfo.version}`;
+    const emailURL = `mailto:sakshamdev3+cocona@gmail.com?subject=${subjects[type]} - ${appInfo.name} v${appInfo.version}`;
     handleOpenURL(emailURL);
   };
 
@@ -90,9 +91,11 @@ const AboutScreen: React.FC = () => {
         <Card style={styles.card}>
           <Card.Content>
             <View style={styles.appHeader}>
-              <Surface style={[styles.appIcon, { backgroundColor: theme.colors.primaryContainer }]} elevation={0}>
-                <MaterialIcons name="account-balance-wallet" size={32} color={theme.colors.onPrimaryContainer} />
-              </Surface>
+              <Image 
+                source={require('../../assets/icon.png')} 
+                style={styles.appIcon}
+                resizeMode="contain"
+              />
               <View style={styles.appInfo}>
                 <Title style={{ color: theme.colors.onSurface }}>{appInfo.name}</Title>
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
@@ -144,40 +147,10 @@ const AboutScreen: React.FC = () => {
           </Card.Content>
         </Card>
 
-        {/* Help & Support */}
+        {/* Feedback */}
         <Card style={styles.card}>
           <Card.Content>
-            <Title style={{ color: theme.colors.onSurface }}>Help & Support</Title>
-            <List.Item
-              title="User Guide"
-              description="Learn how to use all app features"
-              left={(props) => <List.Icon {...props} icon="book-open" />}
-              right={(props) => <List.Icon {...props} icon="open-in-new" />}
-              onPress={() => handleOpenURL('https://github.com')}
-            />
-            <Divider />
-            <List.Item
-              title="FAQ"
-              description="Frequently asked questions"
-              left={(props) => <List.Icon {...props} icon="help-circle" />}
-              right={(props) => <List.Icon {...props} icon="open-in-new" />}
-              onPress={() => handleOpenURL('https://github.com')}
-            />
-            <Divider />
-            <List.Item
-              title="Video Tutorials"
-              description="Watch step-by-step guides"
-              left={(props) => <List.Icon {...props} icon="play-circle" />}
-              right={(props) => <List.Icon {...props} icon="open-in-new" />}
-              onPress={() => handleOpenURL('https://youtube.com')}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Contact */}
-        <Card style={styles.card}>
-          <Card.Content>
-            <Title style={{ color: theme.colors.onSurface }}>Contact</Title>
+            <Title style={{ color: theme.colors.onSurface }}>Feedback</Title>
             <List.Item
               title="Send Feedback"
               description="Share your thoughts and suggestions"
@@ -185,59 +158,58 @@ const AboutScreen: React.FC = () => {
               right={(props) => <List.Icon {...props} icon="chevron-right" />}
               onPress={() => handleSendEmail('feedback')}
             />
-            <Divider />
-            <List.Item
-              title="Get Support"
-              description="Need help with the app?"
-              left={(props) => <List.Icon {...props} icon="support" />}
-              right={(props) => <List.Icon {...props} icon="chevron-right" />}
-              onPress={() => handleSendEmail('support')}
-            />
-            <Divider />
-            <List.Item
-              title="Report Bug"
-              description="Found an issue? Let us know"
-              left={(props) => <List.Icon {...props} icon="bug-report" />}
-              right={(props) => <List.Icon {...props} icon="chevron-right" />}
-              onPress={() => handleSendEmail('bug')}
-            />
           </Card.Content>
         </Card>
 
-        {/* Social & Links */}
+        {/* Connect */}
         <Card style={styles.card}>
           <Card.Content>
             <Title style={{ color: theme.colors.onSurface }}>Connect</Title>
             <List.Item
-              title="Source Code"
-              description="View on GitHub"
-              left={(props) => <List.Icon {...props} icon="code" />}
+              title="LinkedIn"
+              description="linkedin.com/in/sakshamgupta912"
+              left={(props) => <List.Icon {...props} icon="linkedin" />}
               right={(props) => <List.Icon {...props} icon="open-in-new" />}
-              onPress={() => handleOpenURL('https://github.com')}
+              onPress={() => handleOpenURL('https://linkedin.com/in/sakshamgupta912')}
             />
             <Divider />
             <List.Item
-              title="Website"
-              description="Visit our website"
-              left={(props) => <List.Icon {...props} icon="web" />}
+              title="GitHub"
+              description="github.com/sakshamgupta912"
+              left={(props) => <List.Icon {...props} icon="github" />}
               right={(props) => <List.Icon {...props} icon="open-in-new" />}
-              onPress={() => handleOpenURL('https://example.com')}
+              onPress={() => handleOpenURL('https://github.com/sakshamgupta912')}
             />
-            <Divider />
+          </Card.Content>
+        </Card>
+
+        {/* Legal */}
+        <Card style={styles.card}>
+          <Card.Content>
+            <Title style={{ color: theme.colors.onSurface }}>Legal</Title>
             <List.Item
               title="Privacy Policy"
               description="How we handle your data"
-              left={(props) => <List.Icon {...props} icon="privacy-tip" />}
-              right={(props) => <List.Icon {...props} icon="open-in-new" />}
-              onPress={() => handleOpenURL('https://example.com/privacy')}
+              left={(props) => <List.Icon {...props} icon="shield-lock" />}
+              right={(props) => <List.Icon {...props} icon="chevron-right" />}
+              onPress={() => Alert.alert('Privacy Policy', 'Cocona respects your privacy. All data is stored locally on your device and is never shared with third parties without your explicit consent.')}
             />
             <Divider />
             <List.Item
-              title="Terms of Service"
-              description="Terms and conditions"
-              left={(props) => <List.Icon {...props} icon="description" />}
-              right={(props) => <List.Icon {...props} icon="open-in-new" />}
-              onPress={() => handleOpenURL('https://example.com/terms')}
+              title="Terms & Conditions"
+              description="Terms of use"
+              left={(props) => <List.Icon {...props} icon="file-document" />}
+              right={(props) => <List.Icon {...props} icon="chevron-right" />}
+              onPress={() => Alert.alert(
+                'Terms & Conditions',
+                'By using Cocona, you agree to:\n\n' +
+                '1. Use the app for personal expense tracking purposes\n' +
+                '2. Maintain the security of your device and data\n' +
+                '3. Not attempt to reverse engineer or modify the app\n' +
+                '4. Accept that the app is provided "as is" without warranties\n' +
+                '5. Understand that you are responsible for backing up your data\n\n' +
+                'The developer is not liable for any data loss or damages arising from app usage.'
+              )}
             />
           </Card.Content>
         </Card>
@@ -277,11 +249,9 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   appIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 80,
+    height: 80,
+    borderRadius: 16,
     marginRight: 16,
   },
   appInfo: {

@@ -127,6 +127,12 @@ const AddBookScreen: React.FC = () => {
   }, [currency]);
 
   const handleCreateBook = async () => {
+    // CRITICAL: Check if already loading (prevent double-submit race condition)
+    if (isLoading) {
+      console.log('⏭️ AddBook: Already processing, skipping duplicate submission');
+      return;
+    }
+    
     if (!user) {
       Alert.alert('Error', 'User not authenticated');
       return;
@@ -391,17 +397,17 @@ const AddBookScreen: React.FC = () => {
                                 </View>
                               </>
                             ) : (
-                              <>
+                              <View style={styles.rateEditContainer}>
                                 <TextInput
                                   mode="outlined"
-                                  label={`Exchange Rate (1 ${currency} = ? ${userDefaultCurrency})`}
+                                  label={`Rate (1 ${currency} = ? ${userDefaultCurrency})`}
                                   value={customRate}
                                   onChangeText={setCustomRate}
                                   keyboardType="decimal-pad"
                                   dense
-                                  style={{ marginBottom: spacing.sm }}
+                                  style={styles.rateInput}
                                 />
-                                <View style={{ flexDirection: 'row', gap: spacing.xs }}>
+                                <View style={styles.rateEditButtons}>
                                   <Button 
                                     mode="outlined" 
                                     onPress={() => {
@@ -430,7 +436,7 @@ const AddBookScreen: React.FC = () => {
                                     Save
                                   </Button>
                                 </View>
-                              </>
+                              </View>
                             )}
                             <HelperText type="info" visible={true} style={{ fontSize: 11, marginTop: spacing.xs }}>
                               This rate will be locked at book creation and used for all conversions to {userDefaultCurrency}. You can change it later.
@@ -680,6 +686,17 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.xs,
     alignItems: 'center',
     width: '100%',
+  },
+  rateEditContainer: {
+    width: '100%',
+  },
+  rateInput: {
+    marginBottom: spacing.sm,
+    maxHeight: 60,
+  },
+  rateEditButtons: {
+    flexDirection: 'row',
+    gap: spacing.xs,
   },
 });
 

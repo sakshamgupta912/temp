@@ -150,7 +150,7 @@ const DashboardScreen: React.FC = () => {
     try {
       // Sync with Firebase first to get latest data
       console.log('🔄 Pull-to-refresh: Syncing with Firebase...');
-      const syncResult = await syncNow();
+      const syncResult = await syncNow(true); // Manual sync
       if (syncResult.success) {
         console.log('✅ Pull-to-refresh: Sync successful');
       } else {

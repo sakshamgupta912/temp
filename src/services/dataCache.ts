@@ -192,17 +192,22 @@ class DataCacheService {
     }
   }
 
-  clearAll(): void {
+  async clearAll(): Promise<void> {
     console.log('Clearing all cache');
     this.cache.clear();
     
-    // Clear AsyncStorage cache in background
-    AsyncStorage.getAllKeys()
-      .then(keys => {
-        const cacheKeys = keys.filter(key => key.startsWith('cache_'));
-        return AsyncStorage.multiRemove(cacheKeys);
-      })
-      .catch(error => console.warn('Failed to clear AsyncStorage cache:', error));
+    // Clear AsyncStorage cache
+    try {
+      const keys = await AsyncStorage.getAllKeys();
+      const cacheKeys = keys.filter(key => key.startsWith('cache_'));
+      if (cacheKeys.length > 0) {
+        await AsyncStorage.multiRemove(cacheKeys);
+        console.log(`Cleared ${cacheKeys.length} cached items from AsyncStorage`);
+      }
+    } catch (error) {
+      console.warn('Failed to clear AsyncStorage cache:', error);
+      throw error;
+    }
   }
 
   getStats(): { size: number; keys: string[] } {

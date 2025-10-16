@@ -1,5 +1,5 @@
-// Preferences screen - manage app settings and customization
-import React, { useState, useCallback, useEffect } from 'react';
+// Preferences screen - manage app settings
+import React, { useState, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -18,21 +18,17 @@ import {
   Text,
   Button,
   RadioButton,
-  Chip
+  ActivityIndicator
 } from 'react-native-paper';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { StackNavigationProp } from '@react-navigation/stack';
+import { useFocusEffect } from '@react-navigation/native';
 
-import { RootStackParamList } from '../navigation/Navigation';
 import preferencesService, { AppPreferences } from '../services/preferences';
-import { CurrencyPicker, CurrencyDisplay } from '../components/CurrencyPicker';
-import currencyService from '../services/currencyService';
-
-type PreferencesNavigationProp = StackNavigationProp<RootStackParamList>;
+import { CurrencyPicker } from '../components/CurrencyPicker';
+import { useAuth } from '../contexts/AuthContext';
 
 const PreferencesScreen: React.FC = () => {
-  const navigation = useNavigation<PreferencesNavigationProp>();
   const theme = useTheme();
+  const { enableSync, disableSync, getSyncStatus } = useAuth();
 
   const [preferences, setPreferences] = useState<AppPreferences | null>(null);
   const [loading, setLoading] = useState(true);
@@ -64,28 +60,27 @@ const PreferencesScreen: React.FC = () => {
     }
   };
 
-  const handleResetPreferences = () => {
-    Alert.alert(
-      'Reset Preferences',
-      'Are you sure you want to reset all preferences to their default values?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await preferencesService.resetPreferences();
-              await loadPreferences();
-              Alert.alert('Success', 'Preferences reset to defaults');
-            } catch (error) {
-              Alert.alert('Error', 'Failed to reset preferences');
-            }
-          },
-        },
-      ]
-    );
+  // Special handler for Auto Sync toggle - controls both preference and actual cloud sync
+  const handleAutoSyncToggle = async (value: boolean) => {
+    try {
+      // Update the preference first
+      await updatePreference('autoSync', value);
+      
+      // Then enable/disable actual cloud sync
+      if (value) {
+        await enableSync();
+        console.log('✅ Cloud sync enabled via preferences');
+      } else {
+        disableSync();
+        console.log('🛑 Cloud sync disabled via preferences');
+      }
+    } catch (error) {
+      console.error('Error toggling auto sync:', error);
+      Alert.alert('Error', 'Failed to toggle auto sync');
+    }
   };
+
+
 
   useFocusEffect(
     useCallback(() => {
@@ -96,7 +91,8 @@ const PreferencesScreen: React.FC = () => {
   if (loading || !preferences) {
     return (
       <View style={[styles.container, styles.loadingContainer, { backgroundColor: theme.colors.background }]}>
-        <Text>Loading preferences...</Text>
+        <ActivityIndicator size="large" />
+        <Text style={{ marginTop: 16 }}>Loading preferences...</Text>
       </View>
     );
   }
@@ -168,11 +164,6 @@ const PreferencesScreen: React.FC = () => {
       </Dialog.Actions>
     </Dialog>
   );
-
-  const getCurrentCurrencyDisplay = () => {
-    const currency = currencyService.getCurrencyByCode(preferences.currency);
-    return currency ? `${currency.symbol} ${currency.name}` : preferences.currency;
-  };
 
   const getCurrentDateFormatDisplay = () => {
     const format = dateFormatOptions.find(f => f.value === preferences.dateFormat);
@@ -254,115 +245,15 @@ const PreferencesScreen: React.FC = () => {
           <Card.Content>
             <Title style={{ color: theme.colors.onSurface }}>Behavior</Title>
             <List.Item
-              title="Enable Notifications"
-              description="Get reminders and alerts"
-              left={(props) => <List.Icon {...props} icon="bell" />}
+              title="Auto Sync"
+              description="Automatically sync data with cloud"
+              left={(props) => <List.Icon {...props} icon="sync" />}
               right={() => (
                 <Switch
-                  value={preferences.enableNotifications}
-                  onValueChange={(value) => updatePreference('enableNotifications', value)}
+                  value={preferences.autoSync}
+                  onValueChange={handleAutoSyncToggle}
                 />
               )}
-            />
-            <Divider />
-            <List.Item
-              title="Biometric Security"
-              description="Use fingerprint or face ID"
-              left={(props) => <List.Icon {...props} icon="fingerprint" />}
-              right={() => (
-                <Switch
-                  value={preferences.enableBiometric}
-                  onValueChange={(value) => updatePreference('enableBiometric', value)}
-                />
-              )}
-            />
-            <Divider />
-            <List.Item
-              title="Auto Backup"
-              description="Automatically backup data"
-              left={(props) => <List.Icon {...props} icon="backup-restore" />}
-              right={() => (
-                <Switch
-                  value={preferences.autoBackup}
-                  onValueChange={(value) => updatePreference('autoBackup', value)}
-                />
-              )}
-            />
-            <Divider />
-            <List.Item
-              title="Enable Analytics"
-              description="Help improve the app with usage data"
-              left={(props) => <List.Icon {...props} icon="chart-bar" />}
-              right={() => (
-                <Switch
-                  value={preferences.enableAnalytics}
-                  onValueChange={(value) => updatePreference('enableAnalytics', value)}
-                />
-              )}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Advanced Settings */}
-        <Card style={styles.card}>
-          <Card.Content>
-            <Title style={{ color: theme.colors.onSurface }}>Advanced</Title>
-            <List.Item
-              title="Max Entries Per Page"
-              description={`${preferences.maxEntriesPerPage} entries`}
-              left={(props) => <List.Icon {...props} icon="format-list-numbered" />}
-              right={() => (
-                <View style={styles.chipContainer}>
-                  {[25, 50, 100].map(count => (
-                    <Chip
-                      key={count}
-                      mode={preferences.maxEntriesPerPage === count ? 'flat' : 'outlined'}
-                      selected={preferences.maxEntriesPerPage === count}
-                      onPress={() => updatePreference('maxEntriesPerPage', count)}
-                      style={styles.chip}
-                      compact
-                    >
-                      {count}
-                    </Chip>
-                  ))}
-                </View>
-              )}
-            />
-            <Divider />
-            <List.Item
-              title="Cache Timeout"
-              description={`${preferences.cacheTimeout / 1000 / 60} minutes`}
-              left={(props) => <List.Icon {...props} icon="timer" />}
-              right={() => (
-                <View style={styles.chipContainer}>
-                  {[1, 5, 10, 30].map(minutes => (
-                    <Chip
-                      key={minutes}
-                      mode={preferences.cacheTimeout === minutes * 60 * 1000 ? 'flat' : 'outlined'}
-                      selected={preferences.cacheTimeout === minutes * 60 * 1000}
-                      onPress={() => updatePreference('cacheTimeout', minutes * 60 * 1000)}
-                      style={styles.chip}
-                      compact
-                    >
-                      {minutes}m
-                    </Chip>
-                  ))}
-                </View>
-              )}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Reset */}
-        <Card style={styles.card}>
-          <Card.Content>
-            <List.Item
-              title="Reset All Preferences"
-              description="Restore all settings to defaults"
-              left={(props) => <List.Icon {...props} icon="restore" />}
-              right={(props) => <List.Icon {...props} icon="chevron-right" />}
-              onPress={handleResetPreferences}
-              titleStyle={{ color: theme.colors.error }}
             />
           </Card.Content>
         </Card>
@@ -395,13 +286,6 @@ const styles = StyleSheet.create({
   },
   radioItem: {
     paddingVertical: 8,
-  },
-  chipContainer: {
-    flexDirection: 'row',
-    gap: 4,
-  },
-  chip: {
-    marginHorizontal: 2,
   },
   currencyPickerContainer: {
     paddingVertical: 8,

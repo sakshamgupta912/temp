@@ -178,6 +178,9 @@ const CategoryManagementScreen: React.FC = () => {
   };
 
   const handleDeleteCategory = async (category: Category) => {
+    // CRITICAL: Check if already loading (prevent double-delete race condition)
+    // Note: This screen doesn't have isLoading state, but we should add early return check if one is added
+    
     // Prevent deletion of mandatory "Others" category
     if (category.name.toLowerCase() === 'others' && category.userId === 'default') {
       Alert.alert(

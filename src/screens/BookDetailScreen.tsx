@@ -8,7 +8,8 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  Pressable 
+  Pressable,
+  ScrollView
 } from 'react-native';
 import { 
   Card, 
@@ -21,19 +22,26 @@ import {
   IconButton,
   Menu,
   Divider,
-  Button
+  Button,
+  Portal,
+  Dialog,
+  TextInput,
+  List,
+  TouchableRipple
 } from 'react-native-paper';
 import { RouteProp, useNavigation, useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { MaterialIcons } from '@expo/vector-icons';
 
 import { RootStackParamList } from '../navigation/Navigation';
-import { Entry, PaymentMode } from '../models/types';
+import { Entry, PaymentMode, Category } from '../models/types';
 import asyncStorageService from '../services/asyncStorage';
+import { dataCacheService } from '../services/dataCache';
 import { spacing, borderRadius } from '../theme/materialTheme';
 import { useCurrency } from '../hooks/useCurrency';
 import { useAuth } from '../contexts/AuthContext';
 import currencyUtils from '../utils/currencyUtils';
+import currencyService from '../services/currencyService';
 import { EntryDebugger } from '../components/EntryDebugger';
 import { ExchangeRateEditor } from '../components/ExchangeRateEditor';
 import preferencesService from '../services/preferences';
@@ -53,6 +61,7 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
   const { user, syncNow } = useAuth();
 
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [totalIncome, setTotalIncome] = useState(0);
@@ -69,6 +78,16 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
   
   // Developer mode state
   const [developerMode, setDeveloperMode] = useState(false);
+  
+  // Bulk selection state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
+  const [showBookSelectionDialog, setShowBookSelectionDialog] = useState(false);
+  const [showCurrencyConversionDialog, setShowCurrencyConversionDialog] = useState(false);
+  const [bulkOperation, setBulkOperation] = useState<'move' | 'copy' | null>(null);
+  const [targetBook, setTargetBook] = useState<{id: string, name: string, currency: string} | null>(null);
+  const [conversionRate, setConversionRate] = useState<number>(1);
+  const [books, setBooks] = useState<any[]>([]);
   
   // Ref to prevent immediate dismissal after opening
   const menuOpenTime = useRef<number>(0);
@@ -99,8 +118,9 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
         return;
       }
       
-      const books = await asyncStorageService.getBooks(user.id);
-      const currentBook = books.find(b => b.id === bookId);
+      const allBooks = await asyncStorageService.getBooks(user.id);
+      setBooks(allBooks); // Store for bulk operations
+      const currentBook = allBooks.find(b => b.id === bookId);
       const currency = currentBook?.currency || 'USD';
       setBookCurrency(currency);
       console.log(`BookDetail: Book "${bookName}" uses currency: ${currency}`);
@@ -108,6 +128,11 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
       // Load user's default currency
       const prefs = await preferencesService.getPreferences();
       setUserDefaultCurrency(prefs.currency);
+      
+      // Load categories for display
+      const userCategories = await asyncStorageService.getCategories(user.id);
+      setCategories(userCategories);
+      console.log('BookDetail: Categories loaded:', userCategories.length);
       
       const bookEntries = await asyncStorageService.getEntries(bookId);
       console.log('BookDetail: Entries loaded:', bookEntries.length);
@@ -149,20 +174,70 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
   }, [bookId]);
 
   // Add edit button to header
+  const handleArchiveBook = useCallback(async () => {
+    try {
+      const currentBook = books.find(b => b.id === bookId);
+      if (!currentBook) return;
+
+      const isArchived = currentBook.archived === true;
+      const action = isArchived ? 'unarchive' : 'archive';
+      
+      Alert.alert(
+        isArchived ? 'Unarchive Book?' : 'Archive Book?',
+        isArchived 
+          ? `"${bookName}" will be visible again and available for AI classification.`
+          : `"${bookName}" will be hidden from the main list and AI won't classify entries into it. You can unarchive it later.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: isArchived ? 'Unarchive' : 'Archive',
+            style: isArchived ? 'default' : 'destructive',
+            onPress: async () => {
+              try {
+                await asyncStorageService.updateBook(bookId, {
+                  archived: !isArchived,
+                  archivedAt: isArchived ? undefined : new Date(),
+                });
+                Alert.alert('Success', `Book ${action}d successfully`);
+                navigation.goBack();
+              } catch (error) {
+                console.error(`Error ${action}ing book:`, error);
+                Alert.alert('Error', `Failed to ${action} book`);
+              }
+            },
+          },
+        ]
+      );
+    } catch (error) {
+      console.error('Error handling archive:', error);
+    }
+  }, [bookId, bookName, books, navigation]);
+
   useLayoutEffect(() => {
+    const currentBook = books.find(b => b.id === bookId);
+    const isArchived = currentBook?.archived === true;
+
     navigation.setOptions({
       headerRight: () => (
-        <IconButton
-          icon="pencil"
-          size={20}
-          onPress={() => {
-            navigation.navigate('EditBook', { bookId });
-          }}
-          iconColor={theme.colors.onSurface}
-        />
+        <View style={{ flexDirection: 'row' }}>
+          <IconButton
+            icon={isArchived ? 'package-up' : 'package-down'}
+            size={20}
+            onPress={handleArchiveBook}
+            iconColor={theme.colors.onSurface}
+          />
+          <IconButton
+            icon="pencil"
+            size={20}
+            onPress={() => {
+              navigation.navigate('EditBook', { bookId });
+            }}
+            iconColor={theme.colors.onSurface}
+          />
+        </View>
       ),
     });
-  }, [navigation, bookId, theme.colors.onSurface]);
+  }, [navigation, bookId, books, handleArchiveBook, theme.colors.onSurface]);
 
   // Load entries when screen is focused
   useFocusEffect(
@@ -176,7 +251,7 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
     try {
       // Sync with Firebase first to get latest data
       console.log('🔄 Pull-to-refresh: Syncing with Firebase...');
-      const syncResult = await syncNow();
+      const syncResult = await syncNow(true); // Manual sync
       if (syncResult.success) {
         console.log('✅ Pull-to-refresh: Sync successful');
       } else {
@@ -208,6 +283,12 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
   }, [navigation, bookId]);
 
   const handleDeleteEntry = async (entryId: string, entryDescription: string) => {
+    // CRITICAL: Check if already loading (prevent double-delete race condition)
+    if (isLoading) {
+      console.log('⏭️ BookDetail: Already processing, skipping duplicate delete');
+      return;
+    }
+    
     setMenuVisible(null);
     
     Alert.alert(
@@ -265,6 +346,173 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
     );
   };
 
+  // ==================== BULK SELECTION FUNCTIONS ====================
+
+  const toggleSelectionMode = () => {
+    setSelectionMode(!selectionMode);
+    setSelectedEntries(new Set());
+  };
+
+  const toggleEntrySelection = (entryId: string) => {
+    const newSelected = new Set(selectedEntries);
+    if (newSelected.has(entryId)) {
+      newSelected.delete(entryId);
+    } else {
+      newSelected.add(entryId);
+    }
+    setSelectedEntries(newSelected);
+  };
+
+  const selectAllEntries = () => {
+    const allIds = new Set(entries.map(e => e.id));
+    setSelectedEntries(allIds);
+  };
+
+  const deselectAllEntries = () => {
+    setSelectedEntries(new Set());
+  };
+
+  const handleBulkMove = () => {
+    if (selectedEntries.size === 0) {
+      Alert.alert('No Selection', 'Please select entries to move');
+      return;
+    }
+    setBulkOperation('move');
+    setShowBookSelectionDialog(true);
+  };
+
+  const handleBulkCopy = () => {
+    if (selectedEntries.size === 0) {
+      Alert.alert('No Selection', 'Please select entries to copy');
+      return;
+    }
+    setBulkOperation('copy');
+    setShowBookSelectionDialog(true);
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedEntries.size === 0) {
+      Alert.alert('No Selection', 'Please select entries to delete');
+      return;
+    }
+
+    Alert.alert(
+      'Delete Entries',
+      `Are you sure you want to delete ${selectedEntries.size} ${selectedEntries.size === 1 ? 'entry' : 'entries'}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              for (const entryId of selectedEntries) {
+                await asyncStorageService.deleteEntry(entryId);
+              }
+              Alert.alert('Success', `${selectedEntries.size} ${selectedEntries.size === 1 ? 'entry' : 'entries'} deleted`);
+              setSelectionMode(false);
+              setSelectedEntries(new Set());
+              await loadEntries();
+            } catch (error) {
+              console.error('Error deleting entries:', error);
+              Alert.alert('Error', 'Failed to delete entries');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const onBookSelected = async (book: any) => {
+    setTargetBook(book);
+
+    // Check if currency conversion is needed
+    if (book.currency !== bookCurrency) {
+      // Get exchange rate
+      try {
+        const rate = await currencyService.getExchangeRate(bookCurrency, book.currency);
+        setConversionRate(rate || 1);
+        setShowCurrencyConversionDialog(true);
+      } catch (error) {
+        console.error('Error getting exchange rate:', error);
+        Alert.alert('Error', 'Could not fetch exchange rate. Using 1:1 conversion.');
+        setConversionRate(1);
+        setShowCurrencyConversionDialog(true);
+      }
+    } else {
+      // Same currency, proceed directly
+      await executeBulkOperation(book, 1);
+    }
+  };
+
+  const executeBulkOperation = async (targetBookData: any, rate: number) => {
+    try {
+      const entriesToProcess = entries.filter(e => selectedEntries.has(e.id));
+      
+      if (entriesToProcess.length === 0) {
+        Alert.alert('Error', 'No entries to process');
+        return;
+      }
+
+      console.log(`Processing ${entriesToProcess.length} entries with rate ${rate}`);
+      
+      for (const entry of entriesToProcess) {
+        if (bulkOperation === 'move') {
+          // Move: Update bookId and currency, apply conversion rate
+          const oldBookId = entry.bookId; // Store old bookId before update
+          const updatedEntry = {
+            ...entry,
+            bookId: targetBookData.id,
+            currency: targetBookData.currency,
+            amount: entry.amount * rate,
+          };
+          console.log(`Moving entry ${entry.id} from book ${oldBookId} to book ${targetBookData.name} (${targetBookData.id})`);
+          await asyncStorageService.updateEntry(entry.id, updatedEntry);
+          
+          // CRITICAL: Invalidate cache for both source and target books
+          await dataCacheService.invalidatePattern(`entries:bookId:${oldBookId}`);
+          await dataCacheService.invalidatePattern(`entries:bookId:${targetBookData.id}`);
+        } else if (bulkOperation === 'copy') {
+          // Copy: Create new entry with new ID
+          const newEntry = {
+            ...entry,
+            bookId: targetBookData.id,
+            currency: targetBookData.currency,
+            amount: entry.amount * rate,
+            userId: user!.id,
+          };
+          delete (newEntry as any).id;
+          delete (newEntry as any).createdAt;
+          delete (newEntry as any).updatedAt;
+          console.log(`Copying entry to book ${targetBookData.name} (${targetBookData.id})`);
+          await asyncStorageService.createEntry(newEntry);
+          
+          // Invalidate target book cache
+          await dataCacheService.invalidatePattern(`entries:bookId:${targetBookData.id}`);
+        }
+      }
+
+      const operation = bulkOperation === 'move' ? 'moved' : 'copied';
+      Alert.alert('Success', `${selectedEntries.size} ${selectedEntries.size === 1 ? 'entry' : 'entries'} ${operation} to ${targetBookData.name}`);
+      
+      // Clean up state
+      setSelectionMode(false);
+      setSelectedEntries(new Set());
+      setBulkOperation(null);
+      setTargetBook(null);
+      setShowBookSelectionDialog(false);
+      setShowCurrencyConversionDialog(false);
+      
+      // Reload entries
+      await loadEntries();
+    } catch (error) {
+      console.error('Error executing bulk operation:', error);
+      Alert.alert('Error', 'Failed to complete operation');
+    }
+  };
+
+  // ==================== END BULK SELECTION FUNCTIONS ====================
+
   const getPaymentModeLabel = (mode: PaymentMode) => {
     const modes = {
       [PaymentMode.CASH]: 'Cash',
@@ -314,35 +562,70 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
     };
   }, [entries]);
 
-
+  // Helper function to get category name from category ID
+  const getCategoryName = useCallback((categoryId: string): string => {
+    const category = categories.find(c => c.id === categoryId);
+    return category?.name || categoryId; // Fallback to ID if not found
+  }, [categories]);
 
   const renderEntry = ({ item: entry }: { item: Entry }) => {
     const isIncome = entry.amount > 0;
+    const categoryName = getCategoryName(entry.category);
     const description = entry.party ? 
-      `${entry.category} - ${entry.party}` : 
-      entry.category;
+      `${categoryName} - ${entry.party}` : 
+      categoryName;
+    const isSelected = selectedEntries.has(entry.id);
 
     return (
-      <Card 
-        style={[
-          styles.entryCard,
-          { backgroundColor: theme.colors.surface }
-        ]} 
-        elevation={1}
+      <Pressable
+        onLongPress={() => {
+          if (!selectionMode) {
+            setSelectionMode(true);
+            toggleEntrySelection(entry.id);
+          }
+        }}
+        onPress={() => {
+          if (selectionMode) {
+            toggleEntrySelection(entry.id);
+          }
+        }}
       >
-        <Card.Content style={styles.entryContent}>
-          <View style={styles.entryHeader}>
-            <View style={styles.entryMainInfo}>
-              <Text style={[styles.entryAmount, {
-                color: isIncome ? theme.colors.primary : theme.colors.error
-              }]}>
-                <EntryAmountText entry={entry} bookCurrency={bookCurrency} />
-              </Text>
-              <Text style={[styles.entryDescription, { color: theme.colors.onSurface }]}>
-                {description}
+        <Card 
+          style={[
+            styles.entryCard,
+            { 
+              backgroundColor: isSelected 
+                ? theme.colors.primaryContainer 
+                : theme.colors.surface 
+            }
+          ]} 
+          elevation={isSelected ? 3 : 1}
+        >
+          <Card.Content style={styles.entryContent}>
+            <View style={styles.entryHeader}>
+              {selectionMode && (
+                <View style={styles.checkboxContainer}>
+                  <IconButton
+                    icon={isSelected ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline'}
+                    size={24}
+                    iconColor={isSelected ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                    onPress={() => toggleEntrySelection(entry.id)}
+                    style={{ margin: 0 }}
+                  />
+                </View>
+              )}
+              <View style={[styles.entryMainInfo, { flex: 1 }]}>
+                <Text style={[styles.entryAmount, {
+                  color: isIncome ? theme.colors.primary : theme.colors.error
+                }]}>
+                  <EntryAmountText entry={entry} bookCurrency={bookCurrency} />
+                </Text>
+                <Text style={[styles.entryDescription, { color: theme.colors.onSurface }]}>
+                  {description}
               </Text>
             </View>
             
+            {!selectionMode && (
             <Menu
               visible={menuVisible === entry.id}
               onDismiss={() => {
@@ -392,6 +675,30 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
                 title="Edit"
                 leadingIcon="pencil"
               />
+              <Divider />
+              <Menu.Item
+                onPress={() => {
+                  console.log(`[BookDetailScreen Entry ${entry.id.slice(-4)}] Menu.Item Move pressed`);
+                  setMenuVisible(null);
+                  setSelectedEntries(new Set([entry.id]));
+                  setBulkOperation('move');
+                  setShowBookSelectionDialog(true);
+                }}
+                title="Move to..."
+                leadingIcon="folder-move"
+              />
+              <Menu.Item
+                onPress={() => {
+                  console.log(`[BookDetailScreen Entry ${entry.id.slice(-4)}] Menu.Item Copy pressed`);
+                  setMenuVisible(null);
+                  setSelectedEntries(new Set([entry.id]));
+                  setBulkOperation('copy');
+                  setShowBookSelectionDialog(true);
+                }}
+                title="Copy to..."
+                leadingIcon="content-copy"
+              />
+              <Divider />
               <Menu.Item
                 onPress={() => {
                   console.log(`[BookDetailScreen Entry ${entry.id.slice(-4)}] Menu.Item Delete pressed`);
@@ -401,6 +708,7 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
                 leadingIcon="delete"
               />
             </Menu>
+            )}
           </View>
 
           <View style={styles.entryDetails}>
@@ -426,6 +734,7 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
           </View>
         </Card.Content>
       </Card>
+      </Pressable>
     );
   };
 
@@ -585,6 +894,125 @@ const BookDetailScreen: React.FC<Props> = ({ route }) => {
       {/* Debug Component - Only visible when developer mode is enabled */}
       {developerMode && <EntryDebugger />}
 
+      {/* Selection Mode Toolbar - Clean Material Design 3 */}
+      {selectionMode && (
+        <Surface style={styles.selectionToolbar} elevation={3}>
+          <View style={styles.toolbarLeft}>
+            <IconButton 
+              icon="close" 
+              onPress={toggleSelectionMode}
+              size={24}
+            />
+            <Text style={[styles.selectionCount, { color: theme.colors.onSurface }]}>
+              {selectedEntries.size} selected
+            </Text>
+          </View>
+          <View style={styles.toolbarRight}>
+            <IconButton 
+              icon="select-all" 
+              onPress={selectAllEntries}
+              size={24}
+              disabled={selectedEntries.size === entries.length}
+            />
+            <IconButton 
+              icon="folder-move" 
+              onPress={handleBulkMove}
+              size={24}
+              disabled={selectedEntries.size === 0}
+            />
+            <IconButton 
+              icon="content-copy" 
+              onPress={handleBulkCopy}
+              size={24}
+              disabled={selectedEntries.size === 0}
+            />
+            <IconButton 
+              icon="delete" 
+              onPress={handleBulkDelete}
+              size={24}
+              disabled={selectedEntries.size === 0}
+              iconColor={selectedEntries.size > 0 ? theme.colors.error : undefined}
+            />
+          </View>
+        </Surface>
+      )}
+
+      {/* Book Selection Dialog */}
+      <Portal>
+        <Dialog 
+          visible={showBookSelectionDialog} 
+          onDismiss={() => setShowBookSelectionDialog(false)}
+        >
+          <Dialog.Title>Select Target Book</Dialog.Title>
+          <Dialog.ScrollArea>
+            <ScrollView>
+              {books
+                .filter(b => b.id !== bookId && !b.deleted && !b.archived)
+                .map((book) => (
+                  <TouchableRipple
+                    key={book.id}
+                    onPress={() => {
+                      setShowBookSelectionDialog(false);
+                      onBookSelected(book);
+                    }}
+                  >
+                    <List.Item
+                      title={book.name}
+                      description={`Currency: ${book.currency}`}
+                      left={(props) => <List.Icon {...props} icon="book" />}
+                    />
+                  </TouchableRipple>
+                ))}
+            </ScrollView>
+          </Dialog.ScrollArea>
+          <Dialog.Actions>
+            <Button onPress={() => setShowBookSelectionDialog(false)}>Cancel</Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
+      {/* Currency Conversion Dialog */}
+      <Portal>
+        <Dialog 
+          visible={showCurrencyConversionDialog} 
+          onDismiss={() => setShowCurrencyConversionDialog(false)}
+        >
+          <Dialog.Title>Currency Conversion</Dialog.Title>
+          <Dialog.Content>
+            <Text variant="bodyMedium" style={{ marginBottom: 16 }}>
+              Converting {selectedEntries.size} {selectedEntries.size === 1 ? 'entry' : 'entries'} from {bookCurrency} to {targetBook?.currency}
+            </Text>
+            <TextInput
+              label="Exchange Rate"
+              value={conversionRate.toString()}
+              onChangeText={(text) => {
+                const rate = parseFloat(text);
+                if (!isNaN(rate) && rate > 0) {
+                  setConversionRate(rate);
+                }
+              }}
+              keyboardType="decimal-pad"
+              mode="outlined"
+              style={{ marginBottom: 16 }}
+            />
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+              Preview: {bookCurrency} 100 = {targetBook?.currency} {(100 * conversionRate).toFixed(2)}
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setShowCurrencyConversionDialog(false)}>Cancel</Button>
+            <Button 
+              onPress={() => {
+                setShowCurrencyConversionDialog(false);
+                executeBulkOperation(targetBook!, conversionRate);
+              }}
+            >
+              Confirm
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
       {/* Add Entry FAB */}
       <FAB
         icon="plus"
@@ -719,6 +1147,35 @@ const styles = StyleSheet.create({
     margin: 16,
     right: 0,
     bottom: 0,
+  },
+  selectionToolbar: {
+    position: 'absolute',
+    bottom: 80,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 0,
+  },
+  toolbarLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  toolbarRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  selectionCount: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  checkboxContainer: {
+    marginRight: 8,
+    justifyContent: 'center',
   },
   loadingContainer: {
     justifyContent: 'center',

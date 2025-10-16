@@ -15,7 +15,7 @@ import { SyncStatusBanner } from '../components/SyncStatusBanner';
 type SettingsNavigationProp = StackNavigationProp<RootStackParamList>;
 
 const SettingsScreen: React.FC = () => {
-  const { user, signOut, enableSync, disableSync, syncNow, getSyncStatus } = useAuth();
+  const { user, signOut, enableSync, disableSync, syncNow, getSyncStatus, deleteAllFirebaseData } = useAuth();
   const navigation = useNavigation<SettingsNavigationProp>();
   const theme = useTheme();
 
@@ -82,15 +82,39 @@ const SettingsScreen: React.FC = () => {
   };
 
   const handleLogout = () => {
+    // Check if sync is enabled
+    const isSyncEnabled = syncStatus.syncEnabled;
+    
     Alert.alert(
       'Logout',
-      'Are you sure you want to logout?',
+      isSyncEnabled 
+        ? 'Your data is synced to the cloud. Do you want to keep local data on this device?'
+        : '⚠️ Sync is disabled. Your local data may not be in the cloud. What would you like to do?',
       [
         { text: 'Cancel', style: 'cancel' },
         { 
-          text: 'Logout', 
+          text: 'Keep Local Data', 
+          onPress: () => signOut(false) // Don't clear data
+        },
+        { 
+          text: 'Clear All Data', 
           style: 'destructive',
-          onPress: signOut
+          onPress: () => {
+            Alert.alert(
+              'Confirm Clear Data',
+              isSyncEnabled
+                ? 'This will remove all local data from this device. You can access it again by signing in (data is in the cloud).'
+                : '⚠️ WARNING: This will permanently delete all local data. If sync was disabled, this data may not be in the cloud!',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Clear All Data',
+                  style: 'destructive',
+                  onPress: () => signOut(true) // Clear all data
+                }
+              ]
+            );
+          }
         }
       ]
     );
@@ -106,7 +130,8 @@ const SettingsScreen: React.FC = () => {
 
   const confirmClearCache = async () => {
     try {
-      dataCacheService.clearAll();
+      // Clear cache properly with await
+      await dataCacheService.clearAll();
       setShowConfirmDialog(null);
       Alert.alert('Success', 'Cache cleared successfully');
     } catch (error) {
@@ -117,22 +142,60 @@ const SettingsScreen: React.FC = () => {
 
   const confirmClearData = async () => {
     try {
-      if (!user) return;
-      
-      // Clear all user data
-      const keys = [
-        'books',
-        'entries', 
-        'categories'
-      ];
-      
-      await Promise.all(keys.map(key => AsyncStorage.removeItem(key)));
-      dataCacheService.clearAll();
+      if (!user) {
+        Alert.alert('Error', 'No user logged in');
+        return;
+      }
       
       setShowConfirmDialog(null);
+      
+      console.log('🚀 Starting data deletion process...');
+      
+      // Delete from Firebase first
+      try {
+        console.log('🗑️ Step 1: Deleting data from Firebase...');
+        await deleteAllFirebaseData();
+        console.log('✅ Firebase data deleted successfully');
+      } catch (firebaseError) {
+        console.error('❌ Error deleting Firebase data:', firebaseError);
+        Alert.alert(
+          'Firebase Deletion Failed', 
+          `Failed to delete data from Firebase: ${firebaseError instanceof Error ? firebaseError.message : 'Unknown error'}\n\nDo you want to continue deleting local data?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { 
+              text: 'Delete Local Only', 
+              style: 'destructive',
+              onPress: async () => {
+                try {
+                  await clearLocalData();
+                  Alert.alert('Success', 'Local data cleared. Note: Firebase data may still exist.');
+                } catch (localError) {
+                  console.error('❌ Error deleting local data:', localError);
+                  Alert.alert('Error', 'Failed to delete local data');
+                }
+              }
+            }
+          ]
+        );
+        return;
+      }
+      
+      // Then clear local data
+      try {
+        console.log('🗑️ Step 2: Deleting local data...');
+        await clearLocalData();
+        console.log('✅ Local data deleted successfully');
+      } catch (localError) {
+        console.error('❌ Error deleting local data:', localError);
+        Alert.alert('Error', 'Firebase data was deleted, but failed to clear local data. Try restarting the app.');
+        return;
+      }
+      
+      // Success!
       Alert.alert(
         'Success', 
-        'All data cleared successfully. The app will now restart with default data.',
+        'All data has been permanently deleted from Firebase and your device. The app will now restart with default data.',
         [
           {
             text: 'OK',
@@ -144,9 +207,19 @@ const SettingsScreen: React.FC = () => {
         ]
       );
     } catch (error) {
-      console.error('Error clearing data:', error);
-      Alert.alert('Error', 'Failed to clear data');
+      console.error('❌ Unexpected error during data deletion:', error);
+      Alert.alert('Error', `Failed to clear data: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  };
+
+  const clearLocalData = async () => {
+    // Clear all local data
+    await AsyncStorage.removeItem('budget_app_books');
+    await AsyncStorage.removeItem('budget_app_entries');
+    await AsyncStorage.removeItem('budget_app_categories');
+    await AsyncStorage.removeItem('preferences');
+    await dataCacheService.clearAll();
+    console.log('✅ Local data cleared');
   };
 
 
@@ -188,7 +261,7 @@ const SettingsScreen: React.FC = () => {
   const handleManualSync = async () => {
     setIsSyncLoading(true);
     try {
-      const result = await syncNow();
+      const result = await syncNow(true); // Manual sync
       setSyncStatus(getSyncStatus());
       
       if (result.success) {
@@ -311,7 +384,15 @@ const SettingsScreen: React.FC = () => {
         {/* App Settings */}
         <Card style={styles.card}>
           <Card.Content>
-            <Title style={{ color: theme.colors.onSurface }}>Categories & Data</Title>
+            <Title style={{ color: theme.colors.onSurface }}>AI & Categories</Title>
+            <List.Item
+              title="AI Settings"
+              description="Configure LLM for better transaction predictions"
+              left={(props) => <List.Icon {...props} icon="robot" />}
+              right={(props) => <List.Icon {...props} icon="chevron-right" />}
+              onPress={() => navigation.navigate('AISettings')}
+            />
+            <Divider />
             <List.Item
               title="Manage Categories"
               description="Create, edit, and delete custom categories"
@@ -320,6 +401,8 @@ const SettingsScreen: React.FC = () => {
               onPress={() => navigation.navigate('CategoryManagement')}
             />
             <Divider />
+            
+            
             <List.Item
               title="Create Default Categories"
               description="Add standard income and expense categories"
@@ -327,14 +410,7 @@ const SettingsScreen: React.FC = () => {
               right={(props) => <List.Icon {...props} icon="chevron-right" />}
               onPress={handleCreateDefaultCategories}
             />
-            <Divider />
-            <List.Item
-              title="Export Data"
-              description="Export data as CSV or JSON with options"
-              left={(props) => <List.Icon {...props} icon="export" />}
-              right={(props) => <List.Icon {...props} icon="chevron-right" />}
-              onPress={() => navigation.navigate('DataExport')}
-            />
+            
           </Card.Content>
         </Card>
 
@@ -393,6 +469,23 @@ const SettingsScreen: React.FC = () => {
         <Card style={styles.card}>
           <Card.Content>
             <Title style={{ color: theme.colors.onSurface }}>Data Management</Title>
+              <List.Item
+              title="Export Data"
+              description="Export data as CSV or JSON with options"
+              left={(props) => <List.Icon {...props} icon="export" />}
+              right={(props) => <List.Icon {...props} icon="chevron-right" />}
+              onPress={() => navigation.navigate('DataExport')}
+            />
+             
+               <Divider />
+             <List.Item
+              title="Archived Books"
+              description="View and unarchive hidden books"
+              left={(props) => <List.Icon {...props} icon="archive" />}
+              right={(props) => <List.Icon {...props} icon="chevron-right" />}
+              onPress={() => navigation.navigate('ArchivedBooks')}
+            />
+            <Divider />
             <List.Item
               title="Clear Cache"
               description="Clear app cache to free up space"
@@ -403,7 +496,10 @@ const SettingsScreen: React.FC = () => {
             <Divider />
             <List.Item
               title="Reset All Data"
-              description="Delete all books, entries, and categories"
+              description={syncStatus.syncEnabled 
+                ? "Delete all data from Firebase and locally" 
+                : "Delete all local data (sync is disabled)"
+              }
               left={(props) => <List.Icon {...props} icon="delete-forever" />}
               right={(props) => <List.Icon {...props} icon="chevron-right" />}
               onPress={handleClearData}

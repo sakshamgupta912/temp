@@ -20,7 +20,7 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
 
-import { Entry, Book } from '../models/types';
+import { Entry, Book, Category } from '../models/types';
 import asyncStorageService from '../services/asyncStorage';
 import { useAuth } from '../contexts/AuthContext';
 import { spacing, borderRadius } from '../theme/materialTheme';
@@ -51,6 +51,7 @@ const AnalyticsScreen: React.FC = () => {
   const [allEntries, setAllEntries] = useState<Entry[]>([]);
   const [selectedBook, setSelectedBook] = useState<string>('all');
   const [books, setBooks] = useState<Book[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [timeframe, setTimeframe] = useState<'weekly' | 'monthly'>('monthly');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -69,10 +70,14 @@ const AnalyticsScreen: React.FC = () => {
       
       console.log('Analytics: Loading data for user:', user.id);
       
-      // Load all books for the user
+      // Load all books and categories for the user
       const allBooks = await asyncStorageService.getBooks(user.id);
       console.log('Analytics: Books loaded:', allBooks.length);
       setBooks(allBooks);
+      
+      const allCategories = await asyncStorageService.getCategories(user.id);
+      console.log('Analytics: Categories loaded:', allCategories.length);
+      setCategories(allCategories);
       
       // Get user's default currency
       const userDefaultCurrency = await currencyUtils.getUserDefaultCurrency();
@@ -130,7 +135,7 @@ const AnalyticsScreen: React.FC = () => {
       
       // Calculate insights
       const filteredEntries = getFilteredEntries(allEntriesData, selectedBook);
-      const financialInsights = getFinancialInsights(filteredEntries);
+      const financialInsights = getFinancialInsights(filteredEntries, allCategories);
       setInsights(financialInsights);
       
     } catch (error) {
@@ -155,7 +160,7 @@ const AnalyticsScreen: React.FC = () => {
     try {
       // Sync with Firebase first to get latest data
       console.log('🔄 Pull-to-refresh: Syncing with Firebase...');
-      const syncResult = await syncNow();
+      const syncResult = await syncNow(true); // Manual sync
       if (syncResult.success) {
         console.log('✅ Pull-to-refresh: Sync successful');
       } else {
@@ -192,14 +197,14 @@ const AnalyticsScreen: React.FC = () => {
   }, [filteredEntries, timeframe]);
 
   const categoryData = useMemo(() => {
-    return processCategoryData(filteredEntries);
-  }, [filteredEntries]);
+    return processCategoryData(filteredEntries, categories);
+  }, [filteredEntries, categories]);
 
   // Update insights when filters change
   useEffect(() => {
-    const financialInsights = getFinancialInsights(filteredEntries);
+    const financialInsights = getFinancialInsights(filteredEntries, categories);
     setInsights(financialInsights);
-  }, [filteredEntries]);
+  }, [filteredEntries, categories]);
 
   const renderInsightsCard = useCallback(() => {
     if (!insights) return null;
@@ -307,14 +312,24 @@ const AnalyticsScreen: React.FC = () => {
             </View>
             
             {insights.topExpenseCategory && (
-              <View style={styles.additionalInsightRow}>
-                <Text style={[styles.additionalInsightLabel, { color: theme.colors.onSurfaceVariant }]}>
-                  Top Expense Category:
-                </Text>
-                <Chip mode="outlined" compact>
-                  {insights.topExpenseCategory} - {formatCurrency(insights.topExpenseCategoryAmount, userCurrency)}
-                </Chip>
-              </View>
+              <>
+                <View style={styles.additionalInsightRow}>
+                  <Text style={[styles.additionalInsightLabel, { color: theme.colors.onSurfaceVariant }]}>
+                    Top Expense Category:
+                  </Text>
+                  <Chip mode="outlined" compact style={{ flexShrink: 1 }}>
+                    {insights.topExpenseCategory}
+                  </Chip>
+                </View>
+                <View style={styles.additionalInsightRow}>
+                  <Text style={[styles.additionalInsightLabel, { color: theme.colors.onSurfaceVariant }]}>
+                    Amount in Category:
+                  </Text>
+                  <Text style={[styles.additionalInsightValue, { color: theme.colors.onSurface }]}>
+                    {formatCurrency(insights.topExpenseCategoryAmount, userCurrency)}
+                  </Text>
+                </View>
+              </>
             )}
           </View>
         </Card.Content>
@@ -430,6 +445,13 @@ const AnalyticsScreen: React.FC = () => {
           {/* Trend Charts - Only show if there's data */}
           {filteredEntries.length > 0 && (
             <>
+            {/* Category Breakdown */}
+              <CategoryChart
+                title="Expense Categories"
+                subtitle="Where your money is going"
+                data={categoryData}
+                showPercentages={true}
+              />
               <TrendChart
                 title={`${timeframe === 'monthly' ? 'Monthly' : 'Weekly'} Income vs Expenses`}
                 subtitle="Track your financial flow over time"
@@ -437,7 +459,7 @@ const AnalyticsScreen: React.FC = () => {
                 showIncome={true}
                 showExpense={true}
               />
-
+              
               <BarChart
                 title={`${timeframe === 'monthly' ? 'Monthly' : 'Weekly'} Net Balance`}
                 subtitle="Your savings or deficit by period"
@@ -446,13 +468,7 @@ const AnalyticsScreen: React.FC = () => {
                 color={theme.colors.tertiary}
               />
 
-              {/* Category Breakdown */}
-              <CategoryChart
-                title="Expense Categories"
-                subtitle="Where your money is going"
-                data={categoryData}
-                showPercentages={true}
-              />
+              
 
               {/* Expense Breakdown Bar Chart */}
               <BarChart

@@ -31,6 +31,10 @@ export interface Book {
   // Track currency changes over time (for audit trail)
   currencyHistory?: BookCurrencyHistory[];
   
+  // Archive support - hide book from active use but keep data
+  archived?: boolean; // true if archived (hidden from AI and main views), undefined/false if active
+  archivedAt?: Date; // When the book was archived
+  
   // Soft delete support for multi-device sync
   deleted?: boolean; // Tombstone marker: true if deleted, undefined/false if active
   deletedAt?: Date; // When the item was deleted
@@ -190,6 +194,195 @@ export interface CategorySummary {
   percentage: number;
 }
 
+// ==================== AI TRANSACTION AUTOMATION ====================
+
+// Transaction source types
+export type TransactionSource = 'sms' | 'manual' | 'csv' | 'api';
+export type TransactionStatus = 'pending' | 'approved' | 'rejected' | 'edited';
+
+// Prediction confidence levels
+export interface ConfidenceScore {
+  value: number; // 0-100
+  level: 'high' | 'medium' | 'low'; // >= 80, >= 50, < 50
+}
+
+// AI prediction reasoning for transparency
+export interface PredictionReasoning {
+  bookReason: string;
+  categoryReason: string;
+  merchantReason?: string;
+  paymentModeReason?: string;
+}
+
+// Complete transaction prediction from AI
+export interface TransactionPrediction {
+  // Book prediction
+  bookId: string;
+  bookName: string;
+  bookConfidence: ConfidenceScore;
+  
+  // Category prediction
+  categoryId: string;
+  categoryName: string;
+  categoryConfidence: ConfidenceScore;
+  
+  // Enhanced description
+  suggestedDescription: string;
+  detectedMerchant?: string;
+  
+  // Payment mode prediction
+  paymentMode: PaymentMode;
+  paymentModeConfidence: ConfidenceScore;
+  
+  // Overall confidence (weighted average)
+  overallConfidence: ConfidenceScore;
+  
+  // Reasoning for predictions (helps users understand AI)
+  reasoning: PredictionReasoning;
+  
+  // Alternative suggestions (top 3)
+  alternativeBooks?: Array<{ bookId: string; bookName: string; confidence: number }>;
+  alternativeCategories?: Array<{ categoryId: string; categoryName: string; confidence: number }>;
+}
+
+// Pending transaction awaiting user review
+export interface PendingTransaction {
+  id: string;
+  userId: string;
+  
+  // Raw transaction data from source
+  rawAmount: number;
+  rawCurrency: string;
+  rawDescription: string;
+  transactionDate: Date;
+  transactionType: 'debit' | 'credit'; // Money out vs money in
+  source: TransactionSource;
+  
+  // SMS-specific metadata (if applicable)
+  smsBody?: string;
+  smsSender?: string;
+  smsTimestamp?: Date;
+  
+  // CSV-specific metadata (if applicable)
+  csvRowNumber?: number;
+  csvFileName?: string;
+  
+  // AI predictions
+  prediction: TransactionPrediction;
+  
+  // Review status
+  status: TransactionStatus;
+  reviewedAt?: Date;
+  
+  // If approved/edited, link to created entry
+  entryId?: string;
+  
+  // If edited, store user corrections
+  userCorrections?: {
+    bookId?: string;
+    categoryId?: string;
+    description?: string;
+    paymentMode?: PaymentMode;
+  };
+  
+  // Timestamps
+  createdAt: Date;
+  updatedAt: Date;
+  
+  // Soft delete support
+  deleted?: boolean;
+  deletedAt?: Date;
+}
+
+// Learning data for improving AI predictions over time
+export interface AILearningData {
+  id: string;
+  userId: string;
+  
+  // Transaction pattern identification
+  merchantPattern: string; // Normalized merchant name (lowercase, no special chars)
+  descriptionKeywords: string[]; // Key terms from description
+  amountRange: {
+    min: number;
+    max: number;
+  };
+  
+  // Learned associations from user behavior
+  preferredBookId: string;
+  preferredCategoryId: string;
+  preferredPaymentMode: PaymentMode;
+  
+  // Confidence building metrics
+  matchCount: number; // Times this pattern was confirmed correct
+  correctionCount: number; // Times user corrected this pattern
+  accuracy: number; // matchCount / (matchCount + correctionCount)
+  
+  // Temporal data
+  lastMatchedAt: Date;
+  firstSeenAt: Date;
+  
+  // Timestamps
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Merchant recognition database
+export interface MerchantMapping {
+  id: string;
+  userId: string; // Per-user mappings
+  
+  // Merchant identification
+  merchantName: string; // Normalized name
+  aliases: string[]; // Alternative names/spellings
+  
+  // Default classifications
+  defaultCategoryId: string;
+  defaultPaymentMode: PaymentMode;
+  
+  // Usage statistics
+  transactionCount: number;
+  totalAmount: number;
+  avgAmount: number;
+  lastSeenAt: Date;
+  
+  // Auto-categorization settings
+  autoApprove: boolean; // Auto-approve transactions from this merchant
+  confidenceBoost: number; // Boost confidence by X% for this merchant
+  
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// AI settings and preferences
+export interface AITransactionSettings {
+  userId: string;
+  
+  // Auto-processing settings
+  autoApproveEnabled: boolean;
+  autoApproveThreshold: number; // 0-100, only auto-approve if confidence >= this
+  
+  // SMS monitoring (Android only)
+  smsMonitoringEnabled: boolean;
+  allowedSmsSenders: string[]; // Whitelist of bank sender IDs
+  
+  // Notifications
+  notifyOnNewTransaction: boolean;
+  notifyOnAutoApprove: boolean;
+  notifyWeeklySummary: boolean;
+  
+  // Learning and privacy
+  learningEnabled: boolean; // Allow AI to learn from corrections
+  retainRejectedTransactions: boolean; // Keep rejected for analysis
+  storeSmsContent: boolean; // Store full SMS text or just parsed data
+  anonymizeMerchantNames: boolean; // Hash merchant names for privacy
+  
+  // Data retention
+  pendingTransactionRetentionDays: number; // Auto-delete old pending after X days
+  
+  updatedAt: Date;
+}
+
+// Legacy interface (kept for backward compatibility)
 export interface PendingApproval {
   id: string;
   suggestedCategory: string;

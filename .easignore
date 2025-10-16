@@ -1,0 +1,27 @@
+# EAS Build ignore file
+# Exclude files that cause permission issues or aren't needed for build
+
+.vscode/
+.git/
+node_modules/
+.expo/
+dist/
+web-build/
+
+# Backup files
+*.backup
+
+# Local environment files
+.env*.local
+
+# Debug files
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS files
+.DS_Store
+*.pem
+
+# Temp files
+src/screens/temp.csv

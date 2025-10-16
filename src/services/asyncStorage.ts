@@ -205,9 +205,10 @@ class AsyncStorageService {
             return [];
           }
 
-          // Filter out deleted books (tombstone markers) and get user's books
-          const userBooks = allBooks.filter(book => book.userId === userId && !book.deleted);
-          console.log('AsyncStorage: Retrieved books for user:', userBooks.length);
+          // Filter out deleted and archived books (tombstone markers) and get user's books
+          // By default, hide archived books from main views
+          const userBooks = allBooks.filter(book => book.userId === userId && !book.deleted && !book.archived);
+          console.log('AsyncStorage: Retrieved active books for user:', userBooks.length);
           return userBooks.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         },
         2 * 60 * 1000 // Cache for 2 minutes
@@ -269,6 +270,49 @@ class AsyncStorageService {
     }
   }
 
+  /**
+   * Get archived books for a user
+   * Used for the "Archived Books" view in Settings
+   */
+  async getArchivedBooks(userId: string): Promise<Book[]> {
+    try {
+      if (!userId) {
+        console.error('AsyncStorage: No userId provided for getArchivedBooks');
+        return [];
+      }
+
+      console.log('AsyncStorage: Fetching archived books for user:', userId);
+      
+      const stored = await AsyncStorage.getItem(STORAGE_KEYS.BOOKS);
+      if (!stored) {
+        return [];
+      }
+
+      const allBooks: Book[] = JSON.parse(stored).map((book: any) => ({
+        ...book,
+        createdAt: new Date(book.createdAt),
+        updatedAt: new Date(book.updatedAt),
+        archivedAt: book.archivedAt ? new Date(book.archivedAt) : undefined
+      }));
+
+      // Return only archived books (not deleted)
+      const archivedBooks = allBooks.filter(book => 
+        book.userId === userId && !book.deleted && book.archived === true
+      );
+      
+      console.log('AsyncStorage: Retrieved archived books for user:', archivedBooks.length);
+      return archivedBooks.sort((a, b) => {
+        // Sort by archivedAt date (most recently archived first)
+        const aTime = a.archivedAt?.getTime() || 0;
+        const bTime = b.archivedAt?.getTime() || 0;
+        return bTime - aTime;
+      });
+    } catch (error) {
+      console.error('AsyncStorage: Error getting archived books:', error);
+      return [];
+    }
+  }
+
   async updateBook(bookId: string, updates: Partial<Omit<Book, 'id' | 'createdAt' | 'updatedAt'>>): Promise<void> {
     try {
       const stored = await AsyncStorage.getItem(STORAGE_KEYS.BOOKS);
@@ -280,6 +324,8 @@ class AsyncStorageService {
       if (bookIndex >= 0) {
         const userId = books[bookIndex].userId;
         const currentVersion = books[bookIndex].version || 1;
+        const oldBook = { ...books[bookIndex] };
+        
         books[bookIndex] = {
           ...books[bookIndex],
           ...updates,
@@ -287,7 +333,22 @@ class AsyncStorageService {
           lastModifiedBy: userId, // Track who modified it
           updatedAt: new Date()
         };
+        
+        // DEBUG: Log what's being saved
+        console.log('📝 AsyncStorage: Updating book:', {
+          bookId,
+          bookName: books[bookIndex].name,
+          updates,
+          oldVersion: currentVersion,
+          newVersion: currentVersion + 1,
+          oldArchived: oldBook.archived,
+          newArchived: books[bookIndex].archived,
+          oldArchivedAt: oldBook.archivedAt,
+          newArchivedAt: books[bookIndex].archivedAt
+        });
+        
         await AsyncStorage.setItem(STORAGE_KEYS.BOOKS, JSON.stringify(books));
+        console.log('✅ AsyncStorage: Book saved to local storage successfully');
         
         // Invalidate books cache for this user
         console.log(`Invalidating cache for updated book with userId: ${userId}`);
@@ -301,6 +362,7 @@ class AsyncStorageService {
         }
         
         // Trigger auto-sync
+        console.log('🔔 AsyncStorage: Triggering auto-sync after book update');
         this.notifyDataChanged();
       }
     } catch (error) {

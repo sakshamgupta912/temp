@@ -4,6 +4,8 @@ import { User } from '../models/types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, firestore } from '../services/firebase';
 import { asyncStorageService } from '../services/asyncStorage';
+import { preferencesService } from '../services/preferences';
+import { dataCacheService } from '../services/dataCache';
 import { 
   GoogleAuthProvider, 
   signInWithCredential, 
@@ -22,7 +24,10 @@ import {
   serverTimestamp,
   onSnapshot,
   query,
-  where 
+  where,
+  deleteDoc,
+  getDocs,
+  writeBatch
 } from 'firebase/firestore';
 import * as Google from 'expo-auth-session/providers/google';
 import { makeRedirectUri, ResponseType } from 'expo-auth-session';
@@ -39,17 +44,21 @@ interface AuthContextType {
   signInWithGoogle: () => Promise<{ success: boolean; error?: string; needsOnboarding?: boolean }>;
   linkGoogleAccount: () => Promise<{ success: boolean; error?: string }>;
   unlinkGoogleAccount: () => Promise<{ success: boolean; error?: string }>;
-  signOut: () => Promise<void>;
+  signOut: (clearAllData?: boolean, reason?: 'manual' | 'token-expired' | 'session-expired' | 'permission-error') => Promise<void>;
   completeOnboarding: (preferences: any) => Promise<void>;
+  skipOnboarding: () => Promise<void>;
   checkOnboardingStatus: () => Promise<boolean>;
   
   // Sync methods
   enableSync: () => Promise<void>;
   disableSync: () => void;
-  syncNow: () => Promise<{ success: boolean; message: string; conflicts?: any[] }>;
+  syncNow: (isManual?: boolean) => Promise<{ success: boolean; message: string; conflicts?: any[] }>;
   getSyncStatus: () => any;
   onSyncStatusChange: (callback: (status: any) => void) => () => void;
   checkAuthHealth: () => Promise<{ healthy: boolean; message: string | null }>;
+  
+  // Data management
+  deleteAllFirebaseData: () => Promise<void>;
   
   // Git-style conflict resolution
   conflicts: any[];
@@ -131,8 +140,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         // Skip auto-sync on app reload (first auth event)
         // Only sync on actual sign-in or later auth changes
         if (!isInitialLoad) {
-          console.log('🔄 User authenticated - triggering sync...');
-          await syncNow();
+          console.log('🔄 User authenticated - checking autoSync preference...');
+          
+          // Check if autoSync is enabled in preferences
+          const prefs = await preferencesService.getPreferences();
+          if (prefs.autoSync) {
+            console.log('✅ AutoSync enabled in preferences - triggering sync');
+            await syncNow();
+          } else {
+            console.log('⏭️ AutoSync disabled in preferences - skipping sync');
+          }
         } else {
           console.log('⏭️ Initial load - skipping auto-sync');
           setIsInitialLoad(false);
@@ -160,7 +177,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   useEffect(() => {
     if (!user || !auth.currentUser) return;
 
-    console.log('⏰ Starting automatic token refresh (every 50 minutes)');
+    console.log('⏰ Starting automatic token refresh (every 24 hours)');
 
     const refreshInterval = setInterval(async () => {
       try {
@@ -174,10 +191,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         if (error.code === 'auth/user-token-expired' || 
             error.code === 'auth/invalid-user-token') {
           console.error('🔐 Token expired - user needs to sign in again');
-          await signOut();
+          await signOut(false, 'token-expired');
         }
       }
-    }, 50 * 60 * 1000); // 50 minutes in milliseconds
+    }, 24 * 60 * 60 * 1000); // 24 hours in milliseconds
 
     return () => {
       console.log('⏰ Stopping automatic token refresh');
@@ -203,8 +220,22 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             // Create Firebase credential and sign in
             const googleCredential = GoogleAuthProvider.credential(id_token);
             signInWithCredential(auth, googleCredential)
-              .then((userCredential) => {
+              .then(async (userCredential) => {
                 console.log('✅ Firebase sign-in successful:', userCredential.user.email);
+                
+                // Sync preferences from Firebase
+                await preferencesService.syncWithFirebase(userCredential.user.uid);
+                console.log('✅ Preferences synced from Firebase');
+                
+                // Enable/disable sync based on the autoSync preference
+                const prefs = await preferencesService.getPreferences();
+                if (prefs.autoSync) {
+                  console.log('✅ AutoSync enabled in preferences - enabling cloud sync');
+                  await enableSync();
+                } else {
+                  console.log('⏭️ AutoSync disabled in preferences - keeping sync disabled');
+                }
+                
                 // The Firebase auth state listener will handle updating the user state
               })
               .catch((error) => {
@@ -371,15 +402,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           
           try {
             // Get local data for merge
-            const localBooks = await asyncStorageService.getBooks(userId);
-            const localCategories = await asyncStorageService.getCategories(userId);
-            let localEntries: any[] = [];
-            for (const book of localBooks) {
-              const bookEntries = await asyncStorageService.getEntries(book.id);
-              localEntries = localEntries.concat(bookEntries);
-            }
+            // CRITICAL: Use getAllX() to include deleted AND archived items for proper merge
+            const localBooks = await asyncStorageService.getAllBooks(userId);
+            const localCategories = await asyncStorageService.getAllCategories(userId);
+            const localEntries = await asyncStorageService.getAllEntries(userId);
             
             console.log(`📱 Local data: ${localBooks.length} books, ${localEntries.length} entries, ${localCategories.length} categories`);
+            console.log(`   (${localBooks.filter((b: any) => b.deleted).length} deleted books, ${localBooks.filter((b: any) => b.archived).length} archived books)`);
             
             // THREE-WAY MERGE using Git-style logic
             const { GitStyleSyncService } = await import('../services/gitStyleSync');
@@ -401,6 +430,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
               // For now, merged data already has cloud values for conflicts
             } else {
               console.log('✅ No conflicts - auto-merged successfully');
+            }
+            
+            // DEBUG: Log archived books after merge
+            const mergedArchivedBooks = booksResult.merged.filter((b: any) => b.archived);
+            if (mergedArchivedBooks.length > 0) {
+              console.log('📦 Real-time listener: Archived books after merge:');
+              mergedArchivedBooks.forEach((b: any) => {
+                console.log(`   - ${b.name}: archived=${b.archived}, version=${b.version}`);
+              });
             }
             
             // Save merged data (includes conflicts with cloud values)
@@ -620,6 +658,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         id: books[0].id,
         name: books[0].name,
         currency: books[0].currency,
+        archived: books[0].archived,
+        archivedAt: books[0].archivedAt,
+        version: books[0].version,
         hasUndefined: Object.entries(books[0]).filter(([k, v]) => v === undefined).map(([k]) => k)
       } : 'no books',
       sampleEntry: allEntries[0] ? {
@@ -643,7 +684,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         id: sanitizedBooks[0].id,
         name: sanitizedBooks[0].name,
         currency: sanitizedBooks[0].currency,
-        keys: Object.keys(sanitizedBooks[0]).length
+        archived: sanitizedBooks[0].archived,
+        archivedAt: sanitizedBooks[0].archivedAt,
+        version: sanitizedBooks[0].version,
+        keys: Object.keys(sanitizedBooks[0]).length,
+        allKeys: Object.keys(sanitizedBooks[0])
       } : 'no books',
       sampleEntry: sanitizedEntries[0] ? {
         id: sanitizedEntries[0].id,
@@ -749,6 +794,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const triggerAutoSync = () => {
     if (!user) return;
     
+    // Check if sync is enabled
+    if (!syncEnabled) {
+      console.log('⏭️ Auto-sync skipped - sync is disabled');
+      return;
+    }
+    
     // Clear existing timeout
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
@@ -756,7 +807,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     
     // Set new timeout (2 second debounce)
     syncTimeoutRef.current = setTimeout(async () => {
-      if (user && !isSyncingRef.current) {
+      if (user && !isSyncingRef.current && syncEnabled) {
         console.log('⏰ Auto-sync triggered (2s debounce) - Using Git-style sync');
         
         // Check if auth is still valid
@@ -791,7 +842,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             console.error('🔐 User needs to sign in again');
             
             // Clear session
-            await signOut();
+            await signOut(false, 'permission-error');
           }
         }
       }
@@ -822,6 +873,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       console.log('✅ Email sign-in successful:', userCredential.user.email);
       
+      // Sync preferences from Firebase
+      await preferencesService.syncWithFirebase(userCredential.user.uid);
+      console.log('✅ Preferences synced from Firebase');
+      
+      // Enable/disable sync based on the autoSync preference
+      const prefs = await preferencesService.getPreferences();
+      if (prefs.autoSync) {
+        console.log('✅ AutoSync enabled in preferences - enabling cloud sync');
+        await enableSync();
+      } else {
+        console.log('⏭️ AutoSync disabled in preferences - keeping sync disabled');
+      }
+      
       // Check if onboarding is needed
       const needsOnboarding = await checkOnboardingStatus();
       setNeedsOnboarding(needsOnboarding);
@@ -833,7 +897,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.error('❌ Email sign-in error:', error);
       
       let errorMessage = 'Failed to sign in';
-      if (error.code === 'auth/user-not-found') {
+      if (error.code === 'auth/network-request-failed') {
+        errorMessage = 'Network error. Please check your internet connection and try again.';
+      } else if (error.code === 'auth/user-not-found') {
         errorMessage = 'No account found with this email';
       } else if (error.code === 'auth/wrong-password') {
         errorMessage = 'Incorrect password';
@@ -843,6 +909,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         errorMessage = 'This account has been disabled';
       } else if (error.code === 'auth/too-many-requests') {
         errorMessage = 'Too many failed attempts. Please try again later';
+      } else if (error.code === 'auth/invalid-credential') {
+        errorMessage = 'Invalid email or password';
       }
       
       return { success: false, error: errorMessage };
@@ -942,41 +1010,98 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     return { success: false, error: 'Not implemented yet' };
   };
 
-  const signOut = async (): Promise<void> => {
+  const signOut = async (
+    clearAllData: boolean = false, 
+    reason: 'manual' | 'token-expired' | 'session-expired' | 'permission-error' = 'manual'
+  ): Promise<void> => {
     try {
       setIsLoading(true);
-      console.log('🚪 Signing out...');
       
-      // Step 1: Disable sync to prevent any ongoing sync operations
+      // Log logout reason
+      const reasonMessages = {
+        'manual': '🚪 User initiated logout',
+        'token-expired': '� Automatic logout - Auth token expired',
+        'session-expired': '🔐 Automatic logout - Session expired',
+        'permission-error': '🔐 Automatic logout - Permission denied'
+      };
+      console.log(reasonMessages[reason]);
+      
+      // Step 1: If sync is disabled and there's unsynced data, warn before clearing
+      if (clearAllData && !syncEnabled) {
+        console.warn('⚠️ Clearing all local data - some data may not be synced to cloud');
+      }
+      
+      // Step 2: Handle automatic logout (don't attempt sync - session already invalid)
+      if (reason !== 'manual') {
+        console.warn('⚠️ Automatic logout detected - skipping final sync (session invalid)');
+        console.warn('💾 Local data will be preserved for next login');
+        // For automatic logout, always preserve data (don't clear)
+        clearAllData = false;
+      }
+      
+      // Step 3: Optionally sync unsynced data before logout (ONLY for manual logout)
+      if (!clearAllData && syncEnabled && user && reason === 'manual') {
+        console.log('🔄 Performing final sync before logout...');
+        try {
+          await syncNow(true); // Manual sync
+          console.log('✅ Final sync completed');
+        } catch (error) {
+          console.error('❌ Final sync failed:', error);
+          // Continue with logout even if sync fails
+        }
+      }
+      
+      // Step 4: Disable Firebase preferences sync
+      preferencesService.disableFirebaseSync();
+      console.log('🔓 Disabled Firebase preferences sync');
+      
+      // Step 5: Disable data sync to prevent any ongoing sync operations
       if (syncEnabled) {
         disableSync();
       }
       
-      // Step 2: Cleanup real-time listeners
+      // Step 6: Cleanup real-time listeners
       cleanupRealtimeListeners();
       
-      // Step 3: Clear any pending sync timeouts
+      // Step 7: Clear any pending sync timeouts
       if (syncTimeoutRef.current) {
         clearTimeout(syncTimeoutRef.current);
         syncTimeoutRef.current = null;
       }
       
-      // Step 4: Reset sync state
+      // Step 8: Reset sync state
       isSyncingRef.current = false;
       setLastSyncTime(null);
       setSyncEnabled(false);
       
-      // Step 5: Clear user state BEFORE Firebase signout
+      // Step 9: Clear user state BEFORE Firebase signout
       setUser(null);
       setNeedsOnboarding(false);
       
-      // Step 6: Clear AsyncStorage user data
+      // Step 10: Clear AsyncStorage user data
       await AsyncStorage.removeItem('current_user');
       await AsyncStorage.removeItem('onboarding_completed');
       await AsyncStorage.removeItem('user_preferences');
-      console.log('🗑️ Cleared local user data');
       
-      // Step 7: Sign out from Firebase
+      // Step 11: Clear actual data if requested (books, entries, categories, preferences)
+      if (clearAllData) {
+        console.log('🗑️ Clearing all local data (books, entries, categories, preferences)...');
+        await AsyncStorage.removeItem('budget_app_books');
+        await AsyncStorage.removeItem('budget_app_entries');
+        await AsyncStorage.removeItem('budget_app_categories');
+        await AsyncStorage.removeItem('preferences');
+        
+        // Clear data cache
+        await dataCacheService.clearAll();
+        
+        console.log('✅ All local data cleared');
+      } else {
+        console.log('💾 Local data preserved (books, entries, categories remain on device)');
+      }
+      
+      console.log('🗑️ Cleared user session data');
+      
+      // Step 12: Sign out from Firebase
       await firebaseSignOut(auth);
       
       console.log('✅ Signed out successfully');
@@ -991,15 +1116,92 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
+  // ============ DATA MANAGEMENT ============
+  
+  /**
+   * Delete all user data from Firebase (books, entries, categories, preferences)
+   * This is used when the user wants to permanently delete all their cloud data
+   * 
+   * IMPORTANT: The data structure is:
+   * - Main document: users/{userId} with fields: books[], entries[], categories[]
+   * - Preferences: users/{userId}/preferences/settings
+   */
+  const deleteAllFirebaseData = async (): Promise<void> => {
+    if (!user) {
+      throw new Error('No user signed in');
+    }
+
+    console.log('🗑️ Starting deletion of all Firebase data for user:', user.id);
+
+    try {
+      // Get reference to main user document
+      const userDocRef = doc(firestore, 'users', user.id);
+      const userDoc = await getDoc(userDocRef);
+      
+      if (userDoc.exists()) {
+        const data = userDoc.data();
+        const booksCount = data.books?.length || 0;
+        const entriesCount = data.entries?.length || 0;
+        const categoriesCount = data.categories?.length || 0;
+        
+        console.log('📦 Found user data to delete:', {
+          books: booksCount,
+          entries: entriesCount,
+          categories: categoriesCount,
+          total: booksCount + entriesCount + categoriesCount
+        });
+        
+        // Update the document to have empty arrays
+        await setDoc(userDocRef, {
+          books: [],
+          entries: [],
+          categories: [],
+          lastModified: serverTimestamp()
+        }, { merge: true });
+        
+        console.log('✅ Cleared all data arrays in main user document');
+        
+        // Verify deletion
+        const verifyDoc = await getDoc(userDocRef);
+        if (verifyDoc.exists()) {
+          const verifyData = verifyDoc.data();
+          console.log('🔍 Verification - Current data in Firebase:', {
+            books: verifyData.books?.length || 0,
+            entries: verifyData.entries?.length || 0,
+            categories: verifyData.categories?.length || 0
+          });
+        }
+      } else {
+        console.log('✓ No user document found - nothing to delete');
+      }
+
+      // Delete preferences document
+      try {
+        const preferencesRef = doc(firestore, 'users', user.id, 'preferences', 'settings');
+        const prefsSnapshot = await getDoc(preferencesRef);
+        if (prefsSnapshot.exists()) {
+          await deleteDoc(preferencesRef);
+          console.log('🗑️ Deleted preferences document');
+        } else {
+          console.log('✓ No preferences document found');
+        }
+      } catch (prefsError) {
+        console.warn('⚠️ Error deleting preferences (may not exist):', prefsError);
+      }
+
+      console.log('✅ Successfully deleted all Firebase data for user');
+    } catch (error) {
+      console.error('❌ Error deleting Firebase data:', error);
+      throw error;
+    }
+  };
+
   // ============ ONBOARDING METHODS ============
   
   /**
    * Check if user needs onboarding
-   * Returns true if:
-   * - No onboarding_completed flag in AsyncStorage
-   * - No user_preferences in AsyncStorage
-   * - No user document in Firestore
-   * - User document exists but is missing required fields
+   * Returns true ONLY if user is truly new (no data in Firebase)
+   * Existing users with data skip onboarding
    */
   const checkOnboardingStatus = async (): Promise<boolean> => {
     try {
@@ -1007,36 +1209,51 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       // Check local storage first
       const onboardingCompleted = await AsyncStorage.getItem('onboarding_completed');
-      const userPreferences = await AsyncStorage.getItem('user_preferences');
       
-      if (onboardingCompleted === 'true' && userPreferences) {
-        console.log('✅ Onboarding already completed (local)');
+      if (onboardingCompleted === 'true') {
+        console.log('✅ Onboarding already completed (local flag)');
         return false; // No onboarding needed
       }
       
       // Check Firebase if user is authenticated
       if (auth.currentUser) {
-        const userDocRef = doc(firestore, 'userData', auth.currentUser.uid);
-        const userDoc = await getDoc(userDocRef);
+        const userDocRef = doc(firestore, 'users', auth.currentUser.uid, 'preferences', 'settings');
+        const prefsDoc = await getDoc(userDocRef);
         
-        if (userDoc.exists()) {
-          const data = userDoc.data();
-          // Check if essential data exists
-          const hasEssentialData = data.categories && data.categories.length > 0;
+        // If preferences exist in Firebase, user has used the app before
+        if (prefsDoc.exists()) {
+          console.log('✅ User has preferences in Firebase - skipping onboarding');
+          // Mark onboarding as completed locally
+          await AsyncStorage.setItem('onboarding_completed', 'true');
+          return false;
+        }
+        
+        // Check if user has any data (books, entries, categories)
+        const userDataRef = doc(firestore, 'userData', auth.currentUser.uid);
+        const userDataDoc = await getDoc(userDataRef);
+        
+        if (userDataDoc.exists()) {
+          const data = userDataDoc.data();
+          // If user has any data, they're not new
+          const hasData = 
+            (data.books && data.books.length > 0) ||
+            (data.entries && data.entries.length > 0) ||
+            (data.categories && data.categories.length > 0);
           
-          if (hasEssentialData && onboardingCompleted === 'true') {
-            console.log('✅ Onboarding completed (Firebase data exists)');
+          if (hasData) {
+            console.log('✅ User has existing data - skipping onboarding');
+            await AsyncStorage.setItem('onboarding_completed', 'true');
             return false;
           }
         }
       }
       
-      console.log('⚠️ Onboarding needed');
-      return true; // Onboarding needed
+      console.log('⚠️ New user - onboarding needed');
+      return true; // Onboarding needed for truly new users
     } catch (error) {
       console.error('Error checking onboarding status:', error);
-      // Default to showing onboarding if check fails
-      return true;
+      // On error, skip onboarding to avoid blocking users
+      return false;
     }
   };
 
@@ -1106,6 +1323,55 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
+  /**
+   * Skip onboarding and use default preferences
+   */
+  const skipOnboarding = async (): Promise<void> => {
+    try {
+      console.log('⏭️ Skipping onboarding - using defaults');
+      
+      // Get current preferences (already synced from Firebase if they exist)
+      const currentPrefs = await preferencesService.getPreferences();
+      
+      // Mark onboarding as completed
+      await AsyncStorage.setItem('onboarding_completed', 'true');
+      
+      // Create default categories if they don't exist
+      if (user) {
+        const existingCategories = await asyncStorageService.getCategories(user.id);
+        if (existingCategories.length === 0) {
+          console.log('📝 Creating default categories...');
+          const defaultCategories = [
+            { userId: user.id, name: 'Food & Dining', icon: 'food', color: '#FF6B6B', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Transportation', icon: 'car', color: '#4ECDC4', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Shopping', icon: 'shopping-bag', color: '#FFD93D', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Entertainment', icon: 'ticket', color: '#95E1D3', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Bills & Utilities', icon: 'receipt', color: '#F38181', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Healthcare', icon: 'medical-bag', color: '#AA96DA', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Education', icon: 'school', color: '#FCBAD3', version: 1, lastModifiedBy: user.id },
+            { userId: user.id, name: 'Others', icon: 'dots-horizontal', color: '#A8D8EA', version: 1, lastModifiedBy: user.id },
+          ];
+          
+          for (const category of defaultCategories) {
+            await asyncStorageService.createCategory(category);
+          }
+        }
+      }
+      
+      // Enable cloud sync with default preferences
+      if (currentPrefs.autoSync && user) {
+        console.log('☁️ Enabling cloud sync with defaults...');
+        await enableSync();
+      }
+      
+      setNeedsOnboarding(false);
+      console.log('✅ Onboarding skipped - using existing preferences');
+    } catch (error) {
+      console.error('Error skipping onboarding:', error);
+      throw error;
+    }
+  };
+
   const enableSync = async (): Promise<void> => {
     console.log('✅ Auto-sync enabled');
     
@@ -1113,6 +1379,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.error('❌ Cannot enable sync - no user');
       return;
     }
+    
+    // Update the autoSync preference
+    await preferencesService.updatePreferences({ autoSync: true });
+    console.log('✅ Updated autoSync preference to true');
     
     // Register callback with asyncStorage for data changes
     asyncStorageService.setOnDataChanged(triggerAutoSync);
@@ -1142,6 +1412,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const disableSync = (): void => {
     console.log('🛑 Auto-sync disabled');
+    
+    // Update the autoSync preference (async but we don't await to keep function sync)
+    preferencesService.updatePreferences({ autoSync: false })
+      .then(() => console.log('✅ Updated autoSync preference to false'))
+      .catch((error) => console.error('❌ Error updating autoSync preference:', error));
+    
     // Clear timeout and remove callback
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
@@ -1154,9 +1430,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     cleanupRealtimeListeners();
   };
 
-  const syncNow = async (): Promise<{ success: boolean; message: string }> => {
+  const syncNow = async (isManual: boolean = false): Promise<{ success: boolean; message: string }> => {
     if (!user) {
       return { success: false, message: 'No user authenticated' };
+    }
+
+    // If this is an automatic sync (not manual), check if sync is enabled
+    if (!isManual && !syncEnabled) {
+      console.log('⏭️ Auto-sync skipped - sync is disabled by user preference');
+      return { success: false, message: 'Sync is disabled' };
     }
 
     if (isSyncingRef.current) {
@@ -1251,7 +1533,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             categories: cloudCategories.length 
           });
 
-          console.log('� Step 2: Getting local data for merge...');
+          console.log('📱 Step 2: Getting local data for merge...');
           // CRITICAL: Use getAllX() methods to include deleted items (tombstones)
           // Without tombstones, merge can't detect local deletions!
           const localBooks = await asyncStorageService.getAllBooks(user.id);
@@ -1264,8 +1546,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             categories: localCategories.length,
             deletedBooks: localBooks.filter((b: any) => b.deleted).length,
             deletedEntries: localEntries.filter((e: any) => e.deleted).length,
-            deletedCategories: localCategories.filter((c: any) => c.deleted).length
+            deletedCategories: localCategories.filter((c: any) => c.deleted).length,
+            archivedBooks: localBooks.filter((b: any) => b.archived).length
           });
+          
+          // DEBUG: Log archived books details
+          const archivedBooks = localBooks.filter((b: any) => b.archived);
+          if (archivedBooks.length > 0) {
+            console.log('📦 Archived books in local data:');
+            archivedBooks.forEach((b: any) => {
+              console.log(`   - ${b.name}: archived=${b.archived}, archivedAt=${b.archivedAt}, version=${b.version}`);
+            });
+          }
 
           console.log('🔀 Step 3: MERGE - Three-way merge (like Git merge)...');
           const { GitStyleSyncService } = await import('../services/gitStyleSync');
@@ -1286,6 +1578,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             categories: categoriesResult.merged.length,
             conflicts: allConflicts.length
           });
+          
+          // DEBUG: Log merged archived books
+          const mergedArchivedBooks = booksResult.merged.filter((b: any) => b.archived);
+          if (mergedArchivedBooks.length > 0) {
+            console.log('📦 Archived books after merge:');
+            mergedArchivedBooks.forEach((b: any) => {
+              console.log(`   - ${b.name}: archived=${b.archived}, archivedAt=${b.archivedAt}, version=${b.version}`);
+            });
+          }
 
           // Filter out false conflicts (where values are actually the same but detected as different due to object comparison)
           // This can happen with Date objects or when values are serialized differently
@@ -1562,6 +1863,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     unlinkGoogleAccount,
     signOut,
     completeOnboarding,
+    skipOnboarding,
     checkOnboardingStatus,
     enableSync,
     disableSync,
@@ -1569,6 +1871,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     getSyncStatus,
     onSyncStatusChange,
     checkAuthHealth,
+    deleteAllFirebaseData,
     conflicts,
     conflictCount,
     clearConflicts,

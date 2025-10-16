@@ -276,7 +276,7 @@ export class GitStyleSyncService {
       
       if (valuesAreDifferent) {
         // Values differ - this is a conflict
-        console.log(`   ⚠️ CONFLICT on "${field}": local="${formatValueForLog(localValue)}" vs cloud="${formatValueForLog(cloudValue)}"`);
+        console.log(`   ⚠️ CONFLICT on "${field}": local="${formatValueForLog(localValue)}" (v${localVersion}) vs cloud="${formatValueForLog(cloudValue)}" (v${cloudVersion})`);
         
         conflicts.push({
           entityType,
@@ -289,8 +289,19 @@ export class GitStyleSyncService {
           cloudVersion
         });
         
-        // Default resolution: Use cloud value (can be overridden)
-        (merged as any)[field] = cloudValue;
+        // CRITICAL FIX: Use the value from the newer version
+        // This is like Git's "ours" vs "theirs" - we take the version with more recent changes
+        if (localVersion > cloudVersion) {
+          console.log(`   ✅ Resolving conflict: Using LOCAL (newer version ${localVersion})`);
+          (merged as any)[field] = localValue;
+        } else if (cloudVersion > localVersion) {
+          console.log(`   ✅ Resolving conflict: Using CLOUD (newer version ${cloudVersion})`);
+          (merged as any)[field] = cloudValue;
+        } else {
+          // Same version but different values - should not happen, but default to local
+          console.log(`   ⚠️ Same version but different values - defaulting to LOCAL`);
+          (merged as any)[field] = localValue;
+        }
       } else {
         // Values match - use either (both same)
         (merged as any)[field] = localValue;
@@ -433,7 +444,7 @@ export class GitStyleSyncService {
 function getFieldsToCheck(entityType: 'book' | 'entry' | 'category'): string[] {
   switch (entityType) {
     case 'book':
-      return ['name', 'description', 'currency', 'lockedExchangeRate', 'deleted'];
+      return ['name', 'description', 'currency', 'lockedExchangeRate', 'deleted', 'archived', 'archivedAt'];
     case 'entry':
       return ['amount', 'date', 'party', 'category', 'paymentMode', 'remarks', 'deleted'];
     case 'category':

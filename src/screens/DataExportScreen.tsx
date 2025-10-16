@@ -5,7 +5,8 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
-  Share
+  Share,
+  Platform
 } from 'react-native';
 import { 
   Card, 
@@ -26,16 +27,20 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as XLSX from 'xlsx';
+import { Paths, File } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 
 import { useAuth } from '../contexts/AuthContext';
 import { RootStackParamList } from '../navigation/Navigation';
 import asyncStorageService from '../services/asyncStorage';
 import preferencesService from '../services/preferences';
+import { Book, Entry, Category, PaymentMode } from '../models/types';
 
 type DataExportNavigationProp = StackNavigationProp<RootStackParamList>;
 
 interface ExportOptions {
-  format: 'JSON' | 'CSV';
+  format: 'JSON' | 'CSV' | 'EXCEL';
   includeBooks: boolean;
   includeEntries: boolean;
   includeCategories: boolean;
@@ -49,7 +54,7 @@ const DataExportScreen: React.FC = () => {
   const theme = useTheme();
 
   const [exportOptions, setExportOptions] = useState<ExportOptions>({
-    format: 'JSON',
+    format: 'EXCEL',
     includeBooks: true,
     includeEntries: true,
     includeCategories: true,
@@ -98,6 +103,100 @@ const DataExportScreen: React.FC = () => {
     return csvContent;
   };
 
+  const generateExcelWorkbook = async (books: Book[], allCategories: Category[], dateFilter: Date | null) => {
+    const workbook = XLSX.utils.book_new();
+
+    // Create a summary sheet
+    const summaryData = [
+      ['Expense Tracker Export'],
+      ['Export Date', new Date().toLocaleDateString()],
+      ['Export Time', new Date().toLocaleTimeString()],
+      ['Total Books', books.length],
+      ['Date Range', getDateRangeLabel()],
+      [],
+    ];
+    const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
+    XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary');
+
+    // Create a sheet for each book with its entries
+    for (const book of books) {
+      console.log(`Exporting book: ${book.name}`);
+      
+      // Get entries for this book
+      let entries = await asyncStorageService.getEntries(book.id);
+      
+      // Filter by date range if specified
+      if (dateFilter) {
+        entries = entries.filter(entry => entry.date >= dateFilter);
+      }
+
+      // Create readable entry data
+      const entriesData = entries.map(entry => {
+        // Find category name
+        const category = allCategories.find(c => c.id === entry.category);
+        const categoryName = category ? category.name : entry.category;
+
+        return {
+          'Date': entry.date instanceof Date ? entry.date.toLocaleDateString() : new Date(entry.date).toLocaleDateString(),
+          'Type': entry.amount >= 0 ? 'Income' : 'Expense',
+          'Amount': Math.abs(entry.amount),
+          'Currency': entry.currency || book.currency,
+          'Category': categoryName,
+          'Party': entry.party || '',
+          'Payment Mode': entry.paymentMode,
+          'Remarks': entry.remarks || '',
+        };
+      });
+
+      // Add book summary at the top
+      const totalIncome = entries.filter(e => e.amount >= 0).reduce((sum, e) => sum + e.amount, 0);
+      const totalExpense = entries.filter(e => e.amount < 0).reduce((sum, e) => sum + Math.abs(e.amount), 0);
+      const netBalance = totalIncome - totalExpense;
+
+      const bookData = [
+        ['Book Name', book.name],
+        ['Description', book.description || ''],
+        ['Currency', book.currency],
+        ['Total Entries', entries.length],
+        ['Total Income', totalIncome.toFixed(2)],
+        ['Total Expense', totalExpense.toFixed(2)],
+        ['Net Balance', netBalance.toFixed(2)],
+        [],
+        // Add entries header
+      ];
+
+      const worksheet = XLSX.utils.aoa_to_sheet(bookData);
+      
+      // Append entries data if there are any
+      if (entriesData.length > 0) {
+        XLSX.utils.sheet_add_json(worksheet, entriesData, { origin: -1, skipHeader: false });
+      } else {
+        XLSX.utils.sheet_add_aoa(worksheet, [['No entries in this book']], { origin: -1 });
+      }
+
+      // Use a safe sheet name (max 31 chars, no special chars)
+      const safeSheetName = book.name.substring(0, 28).replace(/[:\\/?*\[\]]/g, '_');
+      XLSX.utils.book_append_sheet(workbook, worksheet, safeSheetName);
+    }
+
+    // Add Categories sheet if requested
+    if (exportOptions.includeCategories && allCategories.length > 0) {
+      const categoriesData = allCategories
+        .filter(cat => !cat.deleted)
+        .map(cat => ({
+          'Category Name': cat.name,
+          'Description': cat.description || '',
+          'Color': cat.color || '',
+          'Icon': cat.icon || '',
+        }));
+      
+      const categoriesSheet = XLSX.utils.json_to_sheet(categoriesData);
+      XLSX.utils.book_append_sheet(workbook, categoriesSheet, 'Categories');
+    }
+
+    return workbook;
+  };
+
   const exportData = async () => {
     if (!user) {
       Alert.alert('Error', 'You must be logged in to export data');
@@ -108,144 +207,101 @@ const DataExportScreen: React.FC = () => {
       setIsExporting(true);
       setExportProgress(0);
 
-      const exportData: any = {
-        exportInfo: {
-          date: new Date().toISOString(),
-          user: user.id,
-          format: exportOptions.format,
-          dateRange: exportOptions.dateRange,
-          appVersion: '1.0.0'
-        }
-      };
-
-      let totalSteps = 0;
+      let totalSteps = 3; // Load books, load categories, generate file
       let currentStep = 0;
-
-      // Count steps
-      if (exportOptions.includeBooks) totalSteps++;
-      if (exportOptions.includeEntries) totalSteps++;
-      if (exportOptions.includeCategories) totalSteps++;
-      if (exportOptions.includePreferences) totalSteps++;
 
       const updateProgress = () => {
         currentStep++;
         setExportProgress(currentStep / totalSteps);
       };
 
-      // Export Books
-      if (exportOptions.includeBooks) {
-        console.log('Exporting books...');
-        const books = await asyncStorageService.getBooks(user.id);
-        exportData.books = books;
-        updateProgress();
-      }
+      // Load books
+      console.log('Loading books...');
+      const books = await asyncStorageService.getBooks(user.id);
+      const activeBooks = books.filter(book => !book.deleted);
+      updateProgress();
 
-      // Export Entries
-      if (exportOptions.includeEntries) {
-        console.log('Exporting entries...');
-        const books = await asyncStorageService.getBooks(user.id);
-        const allEntries = [];
-        
-        for (const book of books) {
-          const entries = await asyncStorageService.getEntries(book.id);
-          allEntries.push(...entries);
+      // Load categories
+      console.log('Loading categories...');
+      const categories = await asyncStorageService.getCategories(user.id);
+      updateProgress();
+
+      const dateFilter = getDateRangeFilter();
+
+      if (exportOptions.format === 'EXCEL') {
+        // Generate Excel workbook
+        console.log('Generating Excel workbook...');
+        const workbook = await generateExcelWorkbook(activeBooks, categories, dateFilter);
+        updateProgress();
+
+        // Write to file using new expo-file-system API
+        const wbout = XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
+        const fileName = `ExpenseTracker_${new Date().toISOString().split('T')[0]}.xlsx`;
+        const file = new File(Paths.document, fileName);
+
+        // Write the base64 content
+        await file.write(wbout, { encoding: 'base64' });
+
+        // Share the file
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(file.uri, {
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            dialogTitle: 'Export Expense Data',
+            UTI: 'com.microsoft.excel.xlsx',
+          });
+        } else {
+          Alert.alert('Error', 'Sharing is not available on this device');
         }
 
-        // Filter by date range if specified
-        const dateFilter = getDateRangeFilter();
-        let filteredEntries = allEntries;
-        
-        if (dateFilter) {
-          filteredEntries = allEntries.filter(entry => entry.date >= dateFilter);
-        }
+        Alert.alert('Success', 'Excel file exported successfully!');
+      } else if (exportOptions.format === 'JSON') {
+        // JSON export (original logic)
+        const exportData: any = {
+          exportInfo: {
+            date: new Date().toISOString(),
+            user: user.id,
+            dateRange: exportOptions.dateRange,
+            appVersion: '1.0.0'
+          },
+          books: activeBooks,
+          categories: categories,
+        };
 
-        exportData.entries = filteredEntries;
+        const exportContent = JSON.stringify(exportData, null, 2);
+        await Share.share({
+          message: exportContent,
+          title: 'Expense App Data Export (JSON)',
+        });
         updateProgress();
-      }
 
-      // Export Categories
-      if (exportOptions.includeCategories) {
-        console.log('Exporting categories...');
-        const categories = await asyncStorageService.getCategories(user.id);
-        exportData.categories = categories;
-        updateProgress();
-      }
-
-      // Export Preferences
-      if (exportOptions.includePreferences) {
-        console.log('Exporting preferences...');
-        const preferences = await preferencesService.getPreferences();
-        exportData.preferences = preferences;
-        updateProgress();
-      }
-
-      // Generate output based on format
-      let exportContent: string;
-      let fileName: string;
-      let mimeType: string;
-
-      if (exportOptions.format === 'JSON') {
-        exportContent = JSON.stringify(exportData, null, 2);
-        fileName = `expense_data_${new Date().toISOString().split('T')[0]}.json`;
-        mimeType = 'application/json';
+        Alert.alert('Success', 'Data exported successfully as JSON');
       } else {
-        // CSV format - create separate files for each data type
+        // CSV export
         const csvFiles: string[] = [];
         
-        if (exportData.books?.length > 0) {
-          const booksCSV = generateCSV(exportData.books.map((book: any) => ({
-            id: book.id,
+        if (activeBooks.length > 0) {
+          const booksCSV = generateCSV(activeBooks.map((book: Book) => ({
             name: book.name,
             description: book.description || '',
-            created: book.createdAt.toISOString(),
-            updated: book.updatedAt.toISOString()
+            currency: book.currency,
+            created: book.createdAt.toISOString().split('T')[0],
           })));
           csvFiles.push(`--- BOOKS ---\n${booksCSV}`);
         }
 
-        if (exportData.entries?.length > 0) {
-          const entriesCSV = generateCSV(exportData.entries.map((entry: any) => ({
-            id: entry.id,
-            bookId: entry.bookId,
-            amount: entry.amount,
-            date: entry.date.toISOString().split('T')[0],
-            party: entry.party || '',
-            category: entry.category,
-            paymentMode: entry.paymentMode,
-            remarks: entry.remarks || '',
-            created: entry.createdAt.toISOString()
-          })));
-          csvFiles.push(`--- ENTRIES ---\n${entriesCSV}`);
-        }
+        const exportContent = csvFiles.join('\n\n');
+        await Share.share({
+          message: exportContent,
+          title: 'Expense App Data Export (CSV)',
+        });
+        updateProgress();
 
-        if (exportData.categories?.length > 0) {
-          const categoriesCSV = generateCSV(exportData.categories.map((cat: any) => ({
-            id: cat.id,
-            name: cat.name,
-            color: cat.color || '',
-            icon: cat.icon || '',
-            userId: cat.userId,
-            created: cat.createdAt.toISOString()
-          })));
-          csvFiles.push(`--- CATEGORIES ---\n${categoriesCSV}`);
-        }
-
-        exportContent = csvFiles.join('\n\n');
-        fileName = `expense_data_${new Date().toISOString().split('T')[0]}.csv`;
-        mimeType = 'text/csv';
+        Alert.alert('Success', 'Data exported successfully as CSV');
       }
-
-      // Share the export
-      await Share.share({
-        message: exportContent,
-        title: `Expense App Data Export (${exportOptions.format})`,
-      });
-
-      Alert.alert('Success', `Data exported successfully as ${exportOptions.format}`);
 
     } catch (error) {
       console.error('Export error:', error);
-      Alert.alert('Error', 'Failed to export data. Please try again.');
+      Alert.alert('Error', `Failed to export data: ${error}`);
     } finally {
       setIsExporting(false);
       setExportProgress(0);
@@ -424,18 +480,23 @@ const DataExportScreen: React.FC = () => {
           <Dialog.Content>
             <RadioButton.Group
               onValueChange={(value) => {
-                updateOption('format', value as 'JSON' | 'CSV');
+                updateOption('format', value as 'JSON' | 'CSV' | 'EXCEL');
                 setShowFormatDialog(false);
               }}
               value={exportOptions.format}
             >
+              <RadioButton.Item
+                label="Excel (.xlsx) - Multiple sheets per book (Recommended)"
+                value="EXCEL"
+                style={styles.radioItem}
+              />
               <RadioButton.Item
                 label="JSON - Complete structured data"
                 value="JSON"
                 style={styles.radioItem}
               />
               <RadioButton.Item
-                label="CSV - Spreadsheet compatible format"
+                label="CSV - Simple text format"
                 value="CSV"
                 style={styles.radioItem}
               />

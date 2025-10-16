@@ -16,6 +16,7 @@ import BookDetailScreen from '../screens/BookDetailScreen';
 import AddEntryScreen from '../screens/AddEntryScreen';
 import EditEntryScreen from '../screens/EditEntryScreen';
 import AnalyticsScreen from '../screens/AnalyticsScreen';
+import AITransactionsScreen from '../screens/AITransactionsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import CategoryManagementScreen from '../screens/CategoryManagementScreen';
 import PreferencesScreen from '../screens/PreferencesScreen';
@@ -25,6 +26,8 @@ import LoginScreen from '../screens/LoginScreen';
 import SignUpScreen from '../screens/SignUpScreen';
 import OnboardingScreen from '../screens/OnboardingScreen';
 import DebugScreen from '../screens/DebugScreen';
+import ArchivedBooksScreen from '../screens/ArchivedBooksScreen';
+import AISettingsScreen from '../screens/AISettingsScreen';
 
 import { useAuth } from '../contexts/AuthContext';
 
@@ -44,11 +47,14 @@ export type RootStackParamList = {
   DataExport: undefined;
   About: undefined;
   Debug: undefined;
+  ArchivedBooks: undefined;
+  AISettings: undefined;
 };
 
 export type MainTabParamList = {
   Dashboard: undefined;
   Books: undefined;
+  AITransactions: undefined;
   Analytics: undefined;
   Settings: undefined;
 };
@@ -69,6 +75,8 @@ const MainTabs: React.FC = () => {
             iconName = 'dashboard';
           } else if (route.name === 'Books') {
             iconName = 'book';
+          } else if (route.name === 'AITransactions') {
+            iconName = 'auto-awesome';
           } else if (route.name === 'Analytics') {
             iconName = 'analytics';
           } else if (route.name === 'Settings') {
@@ -125,6 +133,14 @@ const MainTabs: React.FC = () => {
         options={{ 
           title: 'My Books',
           tabBarLabel: 'Books',
+        }}
+      />
+      <Tab.Screen 
+        name="AITransactions" 
+        component={AITransactionsScreen}
+        options={{ 
+          title: 'AI Transactions',
+          tabBarLabel: 'AI',
         }}
       />
       <Tab.Screen 
@@ -365,6 +381,20 @@ const Navigation: React.FC = () => {
                   shadowRadius: 4,
                   elevation: 4,
                 },
+              }}
+            />
+            <Stack.Screen 
+              name="ArchivedBooks" 
+              component={ArchivedBooksScreen}
+              options={{ 
+                headerShown: false, // ArchivedBooksScreen has its own Appbar
+              }}
+            />
+            <Stack.Screen 
+              name="AISettings" 
+              component={AISettingsScreen}
+              options={{ 
+                headerShown: false, // AISettingsScreen has its own Appbar
               }}
             />
           </>

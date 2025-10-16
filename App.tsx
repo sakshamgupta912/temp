@@ -2,9 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { useColorScheme } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthProvider } from './src/contexts/AuthContext';
 import Navigation from './src/navigation/Navigation';
 import asyncStorageService from './src/services/asyncStorage';
+import llmTransactionService from './src/services/llmTransactionService';
 import { lightTheme, darkTheme } from './src/theme/materialTheme';
 import ErrorBoundary from './src/components/ErrorBoundary';
 import currencyUtils from './src/utils/currencyUtils';
@@ -33,6 +35,20 @@ export default function App() {
         }
       } catch (error) {
         console.error('App: Currency system validation failed:', error);
+      }
+
+      // Initialize LLM service with saved configuration
+      try {
+        const savedConfig = await AsyncStorage.getItem('llm_config');
+        if (savedConfig) {
+          const config = JSON.parse(savedConfig);
+          await llmTransactionService.initialize(config);
+          console.log('App: LLM service initialized with provider:', config.provider);
+        } else {
+          console.log('App: No LLM config found, using keyword-based AI');
+        }
+      } catch (error) {
+        console.error('App: LLM service initialization failed:', error);
       }
     };
     

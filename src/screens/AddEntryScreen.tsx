@@ -50,6 +50,7 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
   const [paymentMode, setPaymentMode] = useState<PaymentMode>(PaymentMode.CASH);
   const [remarks, setRemarks] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [categories, setCategories] = useState<Category[]>([]);
   
   // NEW: Book and currency state (entries inherit book's currency)
   const [bookCurrency, setBookCurrency] = useState<string>('USD');
@@ -68,12 +69,48 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
 
   useEffect(() => {
     if (user) {
-      // Load book details to get its currency
+      // Load book details, categories, and user preferences
       loadBookDetails();
-      // Set "Others" as default category
-      setSelectedCategory('Others');
+      loadCategories();
+      loadUserPreferences();
     }
   }, [user, bookId]);
+
+  // Load user preferences to set default values
+  const loadUserPreferences = async () => {
+    try {
+      const preferences = await preferencesService.getPreferences();
+      console.log('AddEntry: Loading user preferences:', {
+        defaultPaymentMode: preferences.defaultPaymentMode,
+        defaultEntryType: preferences.defaultEntryType
+      });
+      
+      // Set default payment mode from preferences
+      if (preferences.defaultPaymentMode) {
+        const modeMapping: { [key: string]: PaymentMode } = {
+          'cash': PaymentMode.CASH,
+          'upi': PaymentMode.UPI,
+          'card': PaymentMode.CARD,
+          'net_banking': PaymentMode.NET_BANKING,
+          'cheque': PaymentMode.CHEQUE,
+          'other': PaymentMode.OTHER
+        };
+        const defaultMode = modeMapping[preferences.defaultPaymentMode];
+        if (defaultMode) {
+          setPaymentMode(defaultMode);
+          console.log('AddEntry: Set default payment mode to:', defaultMode);
+        }
+      }
+      
+      // Set default entry type from preferences
+      if (preferences.defaultEntryType) {
+        setEntryType(preferences.defaultEntryType);
+        console.log('AddEntry: Set default entry type to:', preferences.defaultEntryType);
+      }
+    } catch (error) {
+      console.error('Error loading user preferences:', error);
+    }
+  };
 
   // NEW: Load book details to get currency
   const loadBookDetails = async () => {
@@ -93,6 +130,27 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
       console.error('Error loading book details:', error);
       setBookCurrency('USD');
     }
+  };
+
+  // Load categories for display
+  const loadCategories = async () => {
+    try {
+      const userCategories = await asyncStorageService.getCategories(user!.id);
+      setCategories(userCategories);
+      // Set default to "Others" category ID if it exists
+      const othersCategory = userCategories.find(c => c.name.toLowerCase() === 'others');
+      if (othersCategory) {
+        setSelectedCategory(othersCategory.id);
+      }
+    } catch (error) {
+      console.error('Error loading categories:', error);
+    }
+  };
+
+  // Helper to get category name from ID
+  const getCategoryName = (categoryId: string): string => {
+    const category = categories.find(c => c.id === categoryId);
+    return category?.name || 'Select Category';
   };
 
   // OLD conversion preview removed - entries now use book's currency directly
@@ -126,6 +184,12 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
     Keyboard.dismiss();
     
     console.log('AddEntry: Form submission started');
+    
+    // CRITICAL: Check if already loading (prevent double-submit race condition)
+    if (isLoading) {
+      console.log('⏭️ AddEntry: Already processing, skipping duplicate submission');
+      return;
+    }
     
     if (!validateForm()) {
       console.log('AddEntry: Form validation failed');
@@ -369,7 +433,7 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
                 contentStyle={styles.menuButtonContent}
                 icon="chevron-down"
               >
-                {selectedCategory || 'Select Category'}
+                {getCategoryName(selectedCategory)}
               </Button>
               <HelperText type="error" visible={!!errors.category}>
                 {errors.category}
@@ -453,7 +517,7 @@ const AddEntryScreen: React.FC<Props> = ({ route }) => {
                     {entryType === 'income' ? '+' : '-'}{currencyService.formatCurrency(parseFloat(amount), bookCurrency)}
                   </Chip>
                   <Text style={{ color: theme.colors.onSurface }}>
-                    {selectedCategory} • {date.toLocaleDateString()}
+                    {getCategoryName(selectedCategory)} • {date.toLocaleDateString()}
                   </Text>
                 </View>
               </Surface>

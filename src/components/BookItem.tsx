@@ -170,7 +170,7 @@ export const BookItem: React.FC<BookItemProps> = React.memo(({ book, entryCount,
             </View>
           </View>
 
-          <View style={styles.quickActions}>
+          {/* <View style={styles.quickActions}>
             <Button
               mode="text"
               onPress={handleViewDetails}
@@ -187,7 +187,7 @@ export const BookItem: React.FC<BookItemProps> = React.memo(({ book, entryCount,
             >
               Add Entry
             </Button>
-          </View>
+          </View> */}
         </View>
       </Surface>
     </Pressable>

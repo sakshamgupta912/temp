@@ -1,12 +1,13 @@
-import React, { memo, useMemo } from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import React, { memo, useMemo, useRef, useEffect } from 'react';
+import { View, StyleSheet, Dimensions, ScrollView } from 'react-native';
 import { Card, Text, useTheme } from 'react-native-paper';
 import { LineChart, BarChart as RNBarChart, PieChart } from 'react-native-chart-kit';
 import { TrendData, CategoryData, formatCurrency, formatPercentage } from '../utils/chartUtils';
 import { spacing, borderRadius } from '../theme/materialTheme';
 
 const { width: screenWidth } = Dimensions.get('window');
-const chartWidth = screenWidth - 32; // Account for card padding
+const chartWidth = screenWidth - 64; // Account for screen padding (32) + card padding (32)
+const barWidth = 70; // Width per bar in scrollable bar chart
 
 interface BaseChartProps {
   title: string;
@@ -50,9 +51,9 @@ export const TrendChart: React.FC<TrendChartProps> = memo(({
 
     // Prepare data for react-native-chart-kit
     const labels = data.map(item => {
-      // Handle both string and Date objects
-      const date = typeof item.date === 'string' ? new Date(item.date) : item.date;
-      return `${date.getMonth() + 1}/${date.getDate()}`;
+      // The date is already formatted as a string (e.g., "Jan '24" or "15/10")
+      // Just use it directly
+      return item.date;
     });
 
     const datasets: any[] = [];
@@ -325,11 +326,9 @@ export const BarChart: React.FC<BarChartProps> = memo(({
   const barData = useMemo(() => {
     if (data.length === 0) return null;
 
-    const labels = data.map(item => {
-      // Handle both string and Date objects
-      const date = typeof item.date === 'string' ? new Date(item.date) : item.date;
-      return `${date.getMonth() + 1}/${date.getDate()}`;
-    });
+    // The date field is already formatted as a string (date or category name)
+    // Just use it directly - don't try to parse it
+    const labels = data.map(item => item.date);
 
     const chartData = data.map(item => {
       const value = dataKey === 'income' ? item.income :
@@ -373,6 +372,25 @@ export const BarChart: React.FC<BarChartProps> = memo(({
     );
   }
 
+  // Calculate dynamic width based on number of bars
+  const scrollChartWidth = useMemo(() => {
+    const numBars = barData.labels.length;
+    const calculatedWidth = numBars * barWidth;
+    return Math.max(calculatedWidth, chartWidth); // Use at least the min chart width
+  }, [barData.labels.length]);
+
+  // Ref for ScrollView to scroll to end
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  // Auto-scroll to the end (most recent data) when component mounts
+  useEffect(() => {
+    if (scrollViewRef.current && scrollChartWidth > chartWidth) {
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: false });
+      }, 100);
+    }
+  }, [scrollChartWidth]);
+
   return (
     <Card style={[styles.chartCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
       <Card.Content>
@@ -385,16 +403,31 @@ export const BarChart: React.FC<BarChartProps> = memo(({
         </Text>
         )}
         
-        <RNBarChart
-          data={barData}
-          width={chartWidth}
-          height={220}
-          chartConfig={chartConfig}
-          style={styles.chart}
-          yAxisLabel=""
-          yAxisSuffix="k"
-          showValuesOnTopOfBars
-        />
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={true}
+          ref={scrollViewRef}
+          style={styles.chartScrollView}
+          contentContainerStyle={styles.chartScrollContent}
+        >
+          <RNBarChart
+            data={barData}
+            width={scrollChartWidth}
+            height={280}
+            chartConfig={{
+              ...chartConfig,
+              propsForLabels: {
+                fontSize: 11,
+              },
+            }}
+            style={styles.chart}
+            yAxisLabel=""
+            yAxisSuffix="k"
+            showValuesOnTopOfBars
+            fromZero
+            verticalLabelRotation={90}
+          />
+        </ScrollView>
       </Card.Content>
     </Card>
   );
@@ -415,6 +448,12 @@ const styles = StyleSheet.create({
   chart: {
     marginVertical: spacing.sm,
     borderRadius: borderRadius.md,
+  },
+  chartScrollView: {
+    marginVertical: spacing.sm,
+  },
+  chartScrollContent: {
+    paddingBottom: 40, // Extra space for rotated labels
   },
   emptyChart: {
     height: 150,

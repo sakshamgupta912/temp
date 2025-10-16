@@ -64,6 +64,12 @@ const BooksScreen: React.FC = () => {
   }, [user]);
 
   const handleDeleteBook = useCallback(async (book: Book) => {
+    // CRITICAL: Check if already loading (prevent double-delete race condition)
+    if (isLoading) {
+      console.log('⏭️ BooksScreen: Already processing, skipping duplicate delete');
+      return;
+    }
+    
     Alert.alert(
       'Delete Book',
       `Are you sure you want to delete "${book.name}"? This will also delete all entries in this book (${entryCounts[book.id] || 0} entries).`,
@@ -86,13 +92,13 @@ const BooksScreen: React.FC = () => {
         },
       ]
     );
-  }, [entryCounts, loadBooks]);
+  }, [entryCounts, loadBooks, isLoading]);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
       console.log('🔄 Pull-to-refresh: Syncing with Firebase...');
-      const syncResult = await syncNow();
+      const syncResult = await syncNow(true); // Manual sync
       if (syncResult.success) {
         console.log('✅ Pull-to-refresh: Sync successful');
       } else {
@@ -123,7 +129,10 @@ const BooksScreen: React.FC = () => {
   }, [navigation]);
 
   const sortedBooks = useMemo(() => {
-    return books.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    // Filter out archived books from main view
+    return books
+      .filter(book => !book.archived)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [books]);
 
   useFocusEffect(

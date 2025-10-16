@@ -84,8 +84,8 @@ const CategoryPicker: React.FC<CategoryPickerProps> = ({
     };
   }, [filteredCategories]);
 
-  const handleSelect = (categoryName: string) => {
-    onSelect(categoryName);
+  const handleSelect = (categoryId: string) => {
+    onSelect(categoryId);
     setSearchQuery('');
     onDismiss();
   };
@@ -97,11 +97,11 @@ const CategoryPicker: React.FC<CategoryPickerProps> = ({
   };
 
   const renderCategoryItem = ({ item }: { item: Category }) => {
-    const isSelected = item.name === selectedCategory;
+    const isSelected = item.id === selectedCategory;
 
     return (
       <TouchableOpacity
-        onPress={() => handleSelect(item.name)}
+        onPress={() => handleSelect(item.id)}
         activeOpacity={0.7}
       >
         <Surface

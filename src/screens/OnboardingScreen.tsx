@@ -19,6 +19,7 @@ import {
   Switch,
   Divider,
   IconButton,
+  ActivityIndicator,
 } from 'react-native-paper';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { spacing, borderRadius } from '../theme/materialTheme';
@@ -52,13 +53,14 @@ const CURRENCY_OPTIONS = [
 
 const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ navigation }) => {
   const theme = useTheme();
-  const { completeOnboarding } = useAuth();
+  const { completeOnboarding, skipOnboarding } = useAuth();
   const { width } = Dimensions.get('window');
   const scrollViewRef = useRef<ScrollView>(null);
   const progressAnim = useRef(new Animated.Value(0)).current;
 
   // Current step (0-3)
   const [currentStep, setCurrentStep] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Preferences state
   const [preferences, setPreferences] = useState<UserPreferences>({
@@ -70,6 +72,32 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ navigation }) => {
     enableBiometric: false,
     theme: 'system',
   });
+
+  // Load existing preferences from Firebase if available
+  React.useEffect(() => {
+    const loadExistingPreferences = async () => {
+      try {
+        const prefsService = await import('../services/preferences');
+        const existingPrefs = await prefsService.default.getPreferences();
+        
+        // Update preferences with existing values
+        setPreferences(prev => ({
+          ...prev,
+          currency: existingPrefs.currency || prev.currency,
+          dateFormat: existingPrefs.dateFormat || prev.dateFormat,
+          enableCloudSync: existingPrefs.autoSync !== undefined ? existingPrefs.autoSync : prev.enableCloudSync,
+        }));
+        
+        console.log('✅ Pre-populated onboarding with existing preferences');
+      } catch (error) {
+        console.error('Error loading existing preferences:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    loadExistingPreferences();
+  }, []);
 
   const totalSteps = 4;
   const progress = ((currentStep + 1) / totalSteps) * 100;
@@ -106,6 +134,15 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ navigation }) => {
       // Navigation will automatically update when needsOnboarding becomes false
     } catch (error) {
       console.error('Failed to complete onboarding:', error);
+    }
+  };
+
+  const handleSkip = async () => {
+    try {
+      await skipOnboarding();
+      // Navigation will automatically update when needsOnboarding becomes false
+    } catch (error) {
+      console.error('Failed to skip onboarding:', error);
     }
   };
 
@@ -410,19 +447,36 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ navigation }) => {
     </View>
   );
 
+  // Show loading while fetching existing preferences
+  if (isLoading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer, { backgroundColor: theme.colors.background }]}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+        <Text style={{ marginTop: 16, color: theme.colors.onSurface }}>
+          Loading preferences...
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <StatusBar barStyle="dark-content" backgroundColor={theme.colors.background} />
 
-      {/* Progress Bar */}
+      {/* Progress Bar with Skip Button */}
       <Surface style={[styles.progressContainer, { backgroundColor: theme.colors.surface }]} elevation={2}>
         <View style={styles.progressHeader}>
           <Text variant="labelLarge" style={{ color: theme.colors.onSurface }}>
             Step {currentStep + 1} of {totalSteps}
           </Text>
-          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-            {Math.round(progress)}% complete
-          </Text>
+          <Button
+            mode="text"
+            onPress={handleSkip}
+            compact
+            labelStyle={{ fontSize: 14 }}
+          >
+            Skip
+          </Button>
         </View>
         <View style={[styles.progressBarContainer, { backgroundColor: theme.colors.surfaceVariant }]}>
           <Animated.View
@@ -478,6 +532,10 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  loadingContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   progressContainer: {
     paddingHorizontal: spacing.lg,

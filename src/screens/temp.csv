@@ -1,0 +1,26 @@
+--- BOOKS ---
+id,name,description,created,updated
+book_1760595887361_o2zo7y1b3,Book 2,,2025-10-16T06:24:47.361Z,2025-10-16T06:55:28.196Z
+book_1760595316324_09s35o1zh,Book 1,,2025-10-16T06:15:16.324Z,2025-10-16T06:55:28.197Z
+
+--- ENTRIES ---
+id,bookId,amount,date,party,category,paymentMode,remarks,created
+entry_1760595901453_5qq6p4aba,book_1760595887361_o2zo7y1b3,-1,2025-10-16,,category_default_others,cheque,,2025-10-16T06:25:01.453Z
+entry_1760596511502_pyi24nz6p,book_1760595316324_09s35o1zh,100000,2025-10-16,Bought an activa,category_1760595411862_ujrqnofc3,other,Auto-imported from manual,2025-10-16T06:35:11.502Z
+entry_1760596473940_wqvbr82pq,book_1760595316324_09s35o1zh,-10,2025-10-16,,category_1760595411862_ujrqnofc3,cheque,Fuel 2,2025-10-16T06:34:33.940Z
+entry_1760596426362_uuauyhzih,book_1760595316324_09s35o1zh,-100,2025-10-16,,category_1760595411862_ujrqnofc3,upi,Fuel,2025-10-16T06:33:46.362Z
+entry_1760595671378_b86rmtez7,book_1760595316324_09s35o1zh,-100,2025-10-16,,category_1760595362165_bfgh122h1,cheque,,2025-10-16T06:21:11.378Z
+entry_1760595430665_l0sgrr2r0,book_1760595316324_09s35o1zh,1000,2025-10-16,,category_1760595362165_bfgh122h1,upi,,2025-10-16T06:17:10.665Z
+
+--- CATEGORIES ---
+id,name,color,icon,userId,created
+category_default_others,Others,#9E9E9E,category,default,2025-10-16T06:14:55.977Z
+category_1760595362165_bfgh122h1,Food,#2196F3,restaurant,UWwcPkHSG5Wc8UI516SM8cXm42y2,2025-10-16T06:16:02.165Z
+category_1760595411862_ujrqnofc3,Transport,#9C27B0,directions-car,UWwcPkHSG5Wc8UI516SM8cXm42y2,2025-10-16T06:16:51.862Z
+category_1760597927532_cnf5ciuri,Food & Dining,#FF5722,restaurant,default,2025-10-16T06:58:47.532Z
+category_1760597927543_szmhff23o,Shopping,#E91E63,shopping-cart,default,2025-10-16T06:58:47.543Z
+category_1760597927558_4eat5c36q,Transportation,#2196F3,directions-car,default,2025-10-16T06:58:47.558Z
+category_1760597927570_05s0grfcf,Bills & Utilities,#FF9800,phone,default,2025-10-16T06:58:47.570Z
+category_1760597927583_l99inkadb,Healthcare,#F44336,local-hospital,default,2025-10-16T06:58:47.583Z
+category_1760597927594_ck943c7pl,Entertainment,#9C27B0,movie,default,2025-10-16T06:58:47.594Z
+category_1760597927606_b9om2nyil,Salary,#4CAF50,work,default,2025-10-16T06:58:47.606Z

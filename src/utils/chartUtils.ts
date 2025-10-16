@@ -44,7 +44,7 @@ export const getCategoryColor = (index: number): string => {
 };
 
 // Process entries for category breakdown
-export const processCategoryData = (entries: Entry[]): CategoryData[] => {
+export const processCategoryData = (entries: Entry[], categories?: any[]): CategoryData[] => {
   const categoryMap = new Map<string, { amount: number; count: number }>();
   const totalExpenses = entries
     .filter(entry => entry.amount < 0)
@@ -63,13 +63,24 @@ export const processCategoryData = (entries: Entry[]): CategoryData[] => {
 
   // Convert to array and calculate percentages
   const categoryData: CategoryData[] = Array.from(categoryMap.entries())
-    .map(([category, data], index) => ({
-      category,
-      amount: data.amount,
-      count: data.count,
-      percentage: totalExpenses > 0 ? (data.amount / totalExpenses) * 100 : 0,
-      color: getCategoryColor(index)
-    }))
+    .map(([categoryId, data], index) => {
+      // Resolve category ID to name
+      let categoryName = categoryId;
+      if (categories && categories.length > 0) {
+        const categoryObj = categories.find(cat => cat.id === categoryId);
+        if (categoryObj) {
+          categoryName = categoryObj.name;
+        }
+      }
+      
+      return {
+        category: categoryName,
+        amount: data.amount,
+        count: data.count,
+        percentage: totalExpenses > 0 ? (data.amount / totalExpenses) * 100 : 0,
+        color: getCategoryColor(index)
+      };
+    })
     .sort((a, b) => b.amount - a.amount);
 
   return categoryData;
@@ -166,7 +177,7 @@ export interface FinancialInsights {
   daysOfData: number;
 }
 
-export const getFinancialInsights = (entries: Entry[]): FinancialInsights => {
+export const getFinancialInsights = (entries: Entry[], categories?: any[]): FinancialInsights => {
   if (entries.length === 0) {
     return {
       totalIncome: 0,
@@ -197,13 +208,22 @@ export const getFinancialInsights = (entries: Entry[]): FinancialInsights => {
   // Find top expense category
   const categoryData = processCategoryData(entries);
   const topCategory = categoryData.length > 0 ? categoryData[0] : null;
+  
+  // Resolve category ID to name
+  let topCategoryName = topCategory?.category || '';
+  if (topCategoryName && categories && categories.length > 0) {
+    const categoryObj = categories.find(cat => cat.id === topCategoryName);
+    if (categoryObj) {
+      topCategoryName = categoryObj.name;
+    }
+  }
 
   return {
     totalIncome: income,
     totalExpenses: expenses,
     netSavings: income - expenses,
     avgDailyExpense: expenses / daysOfData,
-    topExpenseCategory: topCategory?.category || '',
+    topExpenseCategory: topCategoryName,
     topExpenseCategoryAmount: topCategory?.amount || 0,
     savingsRate: income > 0 ? ((income - expenses) / income) * 100 : 0,
     daysOfData

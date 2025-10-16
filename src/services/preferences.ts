@@ -1,5 +1,8 @@
 // App Preferences Service - manage user preferences and settings
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { firestore } from './firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { auth } from './firebase';
 import currencyService from './currencyService';
 
 export interface AppPreferences {
@@ -52,12 +55,20 @@ const PREFERENCES_KEY = 'app_preferences';
 class PreferencesService {
   private static instance: PreferencesService;
   private cachedPreferences: AppPreferences | null = null;
+  private firebaseSyncEnabled: boolean = false;
 
   static getInstance(): PreferencesService {
     if (!PreferencesService.instance) {
       PreferencesService.instance = new PreferencesService();
     }
     return PreferencesService.instance;
+  }
+
+  /**
+   * Get current user ID from Firebase Auth
+   */
+  private getCurrentUserId(): string | null {
+    return auth.currentUser?.uid || null;
   }
 
   async getPreferences(): Promise<AppPreferences> {
@@ -99,9 +110,79 @@ class PreferencesService {
       this.cachedPreferences = newPreferences;
       
       console.log('Preferences updated:', updates);
+
+      // Sync with Firebase if user is signed in
+      if (this.firebaseSyncEnabled) {
+        const userId = this.getCurrentUserId();
+        if (userId) {
+          await this.saveToFirebase(userId, newPreferences);
+        }
+      }
     } catch (error) {
       console.error('Error updating preferences:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Enable Firebase sync (call after user signs in)
+   */
+  enableFirebaseSync(): void {
+    this.firebaseSyncEnabled = true;
+  }
+
+  /**
+   * Disable Firebase sync (call after user signs out)
+   */
+  disableFirebaseSync(): void {
+    this.firebaseSyncEnabled = false;
+  }
+
+  /**
+   * Load preferences from Firebase and merge with local preferences
+   */
+  async syncWithFirebase(userId: string): Promise<void> {
+    try {
+      const userPrefsRef = doc(firestore, 'users', userId, 'preferences', 'settings');
+      const docSnap = await getDoc(userPrefsRef);
+
+      if (docSnap.exists()) {
+        const firebasePrefs = docSnap.data() as AppPreferences;
+        
+        // Merge Firebase preferences with local preferences (Firebase takes priority)
+        const localPrefs = await this.getPreferences();
+        const mergedPrefs = { ...localPrefs, ...firebasePrefs };
+        
+        // Save merged preferences locally
+        await AsyncStorage.setItem(PREFERENCES_KEY, JSON.stringify(mergedPrefs));
+        this.cachedPreferences = mergedPrefs;
+        
+        console.log('Preferences synced from Firebase');
+      } else {
+        // No Firebase preferences exist, push local preferences to Firebase
+        const localPrefs = await this.getPreferences();
+        await this.saveToFirebase(userId, localPrefs);
+        console.log('Local preferences pushed to Firebase');
+      }
+
+      this.enableFirebaseSync();
+    } catch (error) {
+      console.error('Error syncing preferences with Firebase:', error);
+      // Continue with local preferences even if Firebase sync fails
+    }
+  }
+
+  /**
+   * Save preferences to Firebase
+   */
+  private async saveToFirebase(userId: string, preferences: AppPreferences): Promise<void> {
+    try {
+      const userPrefsRef = doc(firestore, 'users', userId, 'preferences', 'settings');
+      await setDoc(userPrefsRef, preferences);
+      console.log('Preferences saved to Firebase');
+    } catch (error) {
+      console.error('Error saving preferences to Firebase:', error);
+      // Don't throw error - local preferences are still saved
     }
   }
 
